@@ -6,9 +6,14 @@ Original paper: [Gym-μRTS: Toward Affordable Deep Reinforcement Learning Resear
 
 Original code: [gym-microrts-paper](https://github.com/vwxyzjn/gym-microrts-paper).
 
+![demo.gif](https://github.com/vwxyzjn/gym-microrts/raw/master/static/fullgame.gif)
+
 ## Install
 
-Make sure you have `jdk`>=1.8.0 installed. Install Python dependencies:
+Prerequisites:
+* Python 3.7+
+* Java 8.0+
+* FFmpeg (for video capturing)
 
 ```
 git clone https://github.com/kachayev/gym-microrts-paper-sb3
@@ -20,17 +25,15 @@ pip install -r requirements.txt
 
 Most dependencies are copied from the original code [here](https://github.com/vwxyzjn/gym-microrts-paper/blob/master/requirements.txt), with a few caveats. Original versions are commented out in the file, if you are curious.
 
-Video capturing requires `ffmpeg` as well.
-
 ## Training
 
-To traing an agent, please run
+To traing an agent:
 
 ```
 $ python ppo_gridnet_diverse_encode_decode_sb3.py
 ```
 
-If everything is setup correctly, you'll see typicall Stable-Baselines3 verbose logging:
+If everything is setup correctly, you'll see typicall SB3 verbose logging:
 
 ```
 Using cpu device
