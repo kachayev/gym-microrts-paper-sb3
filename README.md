@@ -1,6 +1,6 @@
 # Gym-μRTS with Stable-Baselines3
 
-This repo contains an attempt to reproduce Gridnet PPO with invalid action masking algorithm to play μRTS using [stable-baselines3](https://github.com/DLR-RM/stable-baselines3) library. Apart from reproducibility, this might open access to a diverse set of well tested algorithms, and toolings for training, evaluations, and more.
+This repo contains an attempt to reproduce Gridnet PPO with invalid action masking algorithm to play μRTS using [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) library. Apart from reproducibility, this might open access to a diverse set of well tested algorithms, and toolings for training, evaluations, and more.
 
 Original paper: [Gym-μRTS: Toward Affordable Deep Reinforcement Learning Research in Real-time Strategy Games](https://arxiv.org/abs/2105.13807).
 
