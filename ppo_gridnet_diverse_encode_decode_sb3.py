@@ -216,8 +216,6 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         # https://github.com/DLR-RM/stable-baselines3/blob/201fbffa8c40a628ecb2b30fd0973f3b171e6c4c/stable_baselines3/common/policies.py#L557
         # in case self.mlp_extractor.latent_dim_vf == 1
         self.value_net = nn.Identity()
-        # xxx(okachaiev): I can do this by providing custom "identity" extractor
-        self.features_extractor = nn.Identity()
 
     def _build_mlp_extractor(self) -> None:
         self.mlp_extractor = MicroRTSExtractor(
