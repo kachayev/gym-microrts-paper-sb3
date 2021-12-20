@@ -103,6 +103,16 @@ class Transpose(nn.Module):
     def forward(self, x):
         return x.permute(self.permutation)
 
+# xxx(okachaiev): using modules for functional non-gradient
+# transformations seems like not a torch-like pattern
+class Reshape(nn.Module):
+    def __init__(self, shape):
+        super().__init__()
+        self.shape = shape
+    
+    def forward(self, x):
+        return x.reshape(self.shape)
+
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -112,7 +122,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 # xxx(okachaiev): should this go to "feature extractor" configuration?
 class MicroRTSExtractor(MlpExtractor):
 
-    def __init__(self, input_channels=27, output_channels=78, device = "auto"):
+    def __init__(self, input_channels=27, output_channels=78, action_space_size=None, device = "auto"):
         super(MlpExtractor, self).__init__()
 
         # xxx(okachaiev): requires reading the documentation
@@ -148,8 +158,13 @@ class MicroRTSExtractor(MlpExtractor):
             nn.ReLU(),
             layer_init(nn.ConvTranspose2d(32, output_channels, 3, stride=2, padding=1, output_padding=1)),
             Transpose((0, 2, 3, 1)),
+            Reshape((-1,action_space_size))
         ).to(device)
 
+        # xxx(okachaiev): hack (seems like)
+        # not sure what is the correct approach in SB3
+        # should it be here? or should this be a "value_net"
+        # and "action_net" from the policy itself?
         self.value_net = nn.Sequential(
             nn.Flatten(),
             layer_init(nn.Linear(256, 128), std=1),
@@ -179,6 +194,7 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
             # output_channels=self.action_space.nvec[1:].sum(),
             # xxx(okachaiev): need to find a way to propagate parameters
             output_channels=78,
+            action_space_size=self.action_space.nvec.sum(),
         )
 
     def extract_features(self, obs):
@@ -189,10 +205,7 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         latent_pi, latent_vf = self.mlp_extractor(features)
         values = self.value_net(latent_vf)
 
-        # xxx(okachaiev): hack to make multicategorical work
-        # (1, 16, 16, 78) -> (1, 16*16*78)
-        # logits for each position of each environment
-        latent_pi = latent_pi.reshape(-1, self.action_space.nvec.sum())
+        # apply masking
         latent_pi = torch.where(obs['masks'].bool(), latent_pi, torch.tensor(-1e+8, device=self.device))
 
         # 1*16*16 distributions for each position on each environment
@@ -206,9 +219,7 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         features = self.extract_features(obs)
         latent_pi, latent_vf = self.mlp_extractor(features)
 
-        # xxx(okachaiev): hack to make multicategorical work
-        # (1, 16, 16, 78) -> (1, 16*16*78)
-        latent_pi = latent_pi.reshape(-1, self.action_space.nvec.sum())
+        # apply masking
         latent_pi = torch.where(obs['masks'].bool(), latent_pi, torch.tensor(-1e+8, device=self.device))
 
         distribution = self._get_action_dist_from_latent(latent_pi)
