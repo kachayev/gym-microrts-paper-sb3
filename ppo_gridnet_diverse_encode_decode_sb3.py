@@ -58,31 +58,30 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
         # this parameter separately
         kwargs['num_bot_envs'] = len(kwargs.get('ai2s', []))
         super().__init__(*args, **kwargs)
+        self.num_cells = self.height*self.width
+        self.action_space = gym.spaces.MultiDiscrete(np.array([
+            [6, 4, 4, 4, 4, len(self.utt['unitTypes']), 7 * 7]
+        ] * self.height * self.width).flatten())
         self.observation_space = gym.spaces.Dict({
             "obs": self.observation_space,
             "masks": gym.spaces.Box(
                 low=0.0,
                 high=1.0,
-                shape=(self.height*self.width, self.action_space.nvec[1:].sum()),
+                shape=(self.action_space.nvec.sum(),),
                 dtype=np.int32
             ),
         })
 
     def get_action_mask(self):
         action_mask = np.array(self.vec_client.getMasks(0))
-        action_type_and_parameter_mask = action_mask[:,:,:,1:].reshape(
-            self.num_envs,
-            self.height*self.width,
-            -1
-        )
-        return action_type_and_parameter_mask
+        return action_mask[:,:,:,1:].reshape(self.num_envs, -1)
 
     def step_async(self, action):
-        action = action.reshape(self.num_envs, self.height*self.width, len(self.action_space.nvec[1:]))
+        action = action.reshape(self.num_envs, self.num_cells, -1)
         return super().step_async(action)
 
     def step(self, action):
-        action = action.reshape(self.num_envs, self.height*self.width, len(self.action_space.nvec[1:]))
+        action = action.reshape(self.num_envs, self.num_cells, -1)
         return super().step(action)
 
     def step_wait(self):
@@ -174,14 +173,12 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         self.features_extractor = nn.Identity()
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
-        # xxx(okachaiev): hack to make multicategorical work
-        # we need to ignore the first dimention of 256 grid cells
-        self.action_dist = MultiCategoricalDistribution(self.action_space.nvec[1:])
-
     def _build_mlp_extractor(self) -> None:
         self.mlp_extractor = MicroRTSExtractor(
             input_channels=27,
-            output_channels=self.action_space.nvec[1:].sum()
+            # output_channels=self.action_space.nvec[1:].sum(),
+            # xxx(okachaiev): need to find a way to propagate parameters
+            output_channels=78,
         )
 
     def extract_features(self, obs):
@@ -193,26 +190,15 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         values = self.value_net(latent_vf)
 
         # xxx(okachaiev): hack to make multicategorical work
-        # (1, 16, 16, 78) -> (1*16*16, 78)
+        # (1, 16, 16, 78) -> (1, 16*16*78)
         # logits for each position of each environment
-        masks = obs['masks'].reshape(-1, self.action_space.nvec[1:].sum())
-        latent_pi = latent_pi.reshape(-1, self.action_space.nvec[1:].sum())
-        latent_pi = torch.where(masks.bool(), latent_pi, torch.tensor(-1e+8, device=self.device))
+        latent_pi = latent_pi.reshape(-1, self.action_space.nvec.sum())
+        latent_pi = torch.where(obs['masks'].bool(), latent_pi, torch.tensor(-1e+8, device=self.device))
 
         # 1*16*16 distributions for each position on each environment
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
-
-        # xxx(okachaiev): hack
-        # it should be (n_envs, w*h, n_categorical) = (1, 16*16, 7)
-        # but i'm compressing it into (1, 16*16*7) so sb3 can put
-        # it into rollout buffer
-        actions = actions.reshape(obs['obs'].shape[0], -1)
-
-        # xxx(okachaiev): hack
-        # proper support for array of distributions would be fancy
-        log_prob = log_prob.reshape(obs['obs'].shape[0], -1).sum(dim=-1)
 
         return actions, values, log_prob
 
@@ -221,23 +207,17 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         latent_pi, latent_vf = self.mlp_extractor(features)
 
         # xxx(okachaiev): hack to make multicategorical work
-        # (1, 16, 16, 78) -> (1*16*16, 78)
-        masks = obs['masks'].reshape(-1, self.action_space.nvec[1:].sum())
-        latent_pi = latent_pi.reshape(-1, self.action_space.nvec[1:].sum())
-        latent_pi = torch.where(masks.bool(), latent_pi, torch.tensor(-1e+8, device=self.device))
+        # (1, 16, 16, 78) -> (1, 16*16*78)
+        latent_pi = latent_pi.reshape(-1, self.action_space.nvec.sum())
+        latent_pi = torch.where(obs['masks'].bool(), latent_pi, torch.tensor(-1e+8, device=self.device))
 
         distribution = self._get_action_dist_from_latent(latent_pi)
-        actions = actions.reshape(-1, len(self.action_space.nvec[1:]))
+        actions = actions.reshape(-1, len(self.action_space.nvec))
         log_prob = distribution.log_prob(actions)
-
-        # xxx(okachaiev): hack
-        log_prob = log_prob.reshape(obs['obs'].shape[0], -1).sum(dim=-1)
 
         values = self.value_net(latent_vf)
 
-        # xxx(okachaiev): hack
-        # proper support for array of distributions would be fancy
-        return values, log_prob, distribution.entropy().reshape(obs['obs'].shape[0], -1).sum(dim=-1)
+        return values, log_prob, distribution.entropy()
 
 
 if __name__ == "__main__":
@@ -259,7 +239,4 @@ if __name__ == "__main__":
     envs = VecMonitor(envs)
 
     model = PPO('MicroRTSGridActorCritic', envs, verbose=1)
-    # xxx(okachaiev): hack
-    model.rollout_buffer.action_dim = envs.height*envs.width*len(envs.action_space.nvec[1:])
-    model.rollout_buffer.reset()
-    model.learn(total_timesteps=1_000_000)
+    model.learn(total_timesteps=10_000)
