@@ -77,6 +77,7 @@ As soon as correctness of the implementation is verified, I will provide details
 A few notes / pain points regarding the implementation of the alrogithms, and the process of integrating it with stable-baselines3:
 
 * Gym does not ship a space for "array of multidiscrete" use case (let's be honest, it's not very common). But it gives an option for defining your space when necessary. A new space, when defined, is not easy to integrate into SB3. In a few different places SB3 raises `NotImplementedError` facing unknown space ([example 1](https://github.com/DLR-RM/stable-baselines3/blob/df6f9de8f46509dad47e6d2e5620aa993b0fc883/stable_baselines3/common/distributions.py#L644), [example 2](https://github.com/DLR-RM/stable-baselines3/blob/df6f9de8f46509dad47e6d2e5620aa993b0fc883/stable_baselines3/common/preprocessing.py#L183)).
+* Seems like switching to fully rolled out `MutliDiscrete` space definition has a significant performance penalty. Still investigating if this can be improved.
 * Invalid masking is implemented by passing masks into observations from the wrapper (the observation space is replaced with `gym.spaces.Dict` to hold both observations and masks). By doing it this way, masks are now available for policy, and fit rollout buffer layout. Masking is implemented by setting logits into `-inf` (or to a rather small number).
 
 Look for `xxx(hack)` comments in the code for more details.

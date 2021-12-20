@@ -6,7 +6,7 @@ from torch import nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.distributions import MultiCategoricalDistribution
 from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
-from stable_baselines3.common.torch_layers import MlpExtractor
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecEnvWrapper
 
@@ -119,11 +119,24 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+class NoopFeaturesExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space, features_dim: int = 0):
+        super(BaseFeaturesExtractor, self).__init__()
+        self._observation_space = observation_space
+        self._features_dim = features_dim
+
+    @property
+    def features_dim(self) -> int:
+        return self._features_dim
+
+    def forward(self, observations):
+        observations
+
 # xxx(okachaiev): should this go to "feature extractor" configuration?
-class MicroRTSExtractor(MlpExtractor):
+class MicroRTSExtractor(nn.Module):
 
     def __init__(self, input_channels=27, output_channels=78, action_space_size=None, device = "auto"):
-        super(MlpExtractor, self).__init__()
+        super().__init__()
 
         # xxx(okachaiev): requires reading the documentation
         # to know about these properties. maybe ABC class
@@ -132,7 +145,7 @@ class MicroRTSExtractor(MlpExtractor):
         self.latent_dim_pi = output_channels
         self.latent_dim_vf = 1
     
-        device = get_device(device)
+        self.device = get_device(device)
 
         self.shared_net = nn.Sequential(
             Transpose((0, 3, 1, 2)),
@@ -147,7 +160,7 @@ class MicroRTSExtractor(MlpExtractor):
             nn.ReLU(),
             layer_init(nn.Conv2d(128, 256, kernel_size=3, padding=1)),
             nn.MaxPool2d(3, stride=2, padding=1)
-        ).to(device)
+        ).to(self.device)
 
         self.policy_net = nn.Sequential(
             layer_init(nn.ConvTranspose2d(256, 128, 3, stride=2, padding=1, output_padding=1)),
@@ -159,7 +172,7 @@ class MicroRTSExtractor(MlpExtractor):
             layer_init(nn.ConvTranspose2d(32, output_channels, 3, stride=2, padding=1, output_padding=1)),
             Transpose((0, 2, 3, 1)),
             Reshape((-1,action_space_size))
-        ).to(device)
+        ).to(self.device)
 
         # xxx(okachaiev): hack (seems like)
         # not sure what is the correct approach in SB3
@@ -170,23 +183,41 @@ class MicroRTSExtractor(MlpExtractor):
             layer_init(nn.Linear(256, 128), std=1),
             nn.ReLU(),
             layer_init(nn.Linear(128, 1), std=1),
-        ).to(device)
+        ).to(self.device)
+
+    def _mask_action_logits(self, latent_pi, masks, mask_value=None):
+        mask_value = mask_value or torch.tensor(-1e+8, device=self.device)
+        return torch.where(masks, latent_pi, mask_value)
+
+    def forward(self, features):
+        obs, masks = features
+        shared_latent = self.shared_net(obs)
+        return self._mask_action_logits(self.policy_net(shared_latent), masks), self.value_net(shared_latent)
+
+    def forward_actor(self, features):
+        obs, masks = features
+        return self._mask_action_logits(self.policy_net(self.shared_net(obs)), masks)
+
+    def forward_critic(self, features):
+        obs, _ = features
+        return self.value_net(self.shared_net(obs))
 
 
 class MicroRTSGridActorCritic(ActorCriticPolicy):
 
-    # xxx(okachaiev): hack
-    # seems like redefining "internal" method is not
-    # a good idea
-    def _build(self, lr_schedule) -> None:
-        self._build_mlp_extractor()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         # xxx(okachaiev): hack
         # not sure if turning nets & extractors into identity
         # layers is how it supposed to be done
         self.action_net = nn.Identity()
+        # xxx(okachaiev): hack
+        # it seems like we can avoid doing additional network here:
+        # https://github.com/DLR-RM/stable-baselines3/blob/201fbffa8c40a628ecb2b30fd0973f3b171e6c4c/stable_baselines3/common/policies.py#L557
+        # in case self.mlp_extractor.latent_dim_vf == 1
         self.value_net = nn.Identity()
+        # xxx(okachaiev): I can do this by providing custom "identity" extractor
         self.features_extractor = nn.Identity()
-        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
     def _build_mlp_extractor(self) -> None:
         self.mlp_extractor = MicroRTSExtractor(
@@ -198,37 +229,7 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         )
 
     def extract_features(self, obs):
-        return obs['obs'].float()
-
-    def forward(self, obs, deterministic: bool = False):
-        features = self.extract_features(obs)
-        latent_pi, latent_vf = self.mlp_extractor(features)
-        values = self.value_net(latent_vf)
-
-        # apply masking
-        latent_pi = torch.where(obs['masks'].bool(), latent_pi, torch.tensor(-1e+8, device=self.device))
-
-        # 1*16*16 distributions for each position on each environment
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        actions = distribution.get_actions(deterministic=deterministic)
-        log_prob = distribution.log_prob(actions)
-
-        return actions, values, log_prob
-
-    def evaluate_actions(self, obs, actions):
-        features = self.extract_features(obs)
-        latent_pi, latent_vf = self.mlp_extractor(features)
-
-        # apply masking
-        latent_pi = torch.where(obs['masks'].bool(), latent_pi, torch.tensor(-1e+8, device=self.device))
-
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        actions = actions.reshape(-1, len(self.action_space.nvec))
-        log_prob = distribution.log_prob(actions)
-
-        values = self.value_net(latent_vf)
-
-        return values, log_prob, distribution.entropy()
+        return obs['obs'].float(), obs['masks'].bool()
 
 
 if __name__ == "__main__":
@@ -249,5 +250,10 @@ if __name__ == "__main__":
     )
     envs = VecMonitor(envs)
 
-    model = PPO('MicroRTSGridActorCritic', envs, verbose=1)
+    model = PPO(
+        'MicroRTSGridActorCritic',
+        envs,
+        verbose=1,
+        policy_kwargs=dict(ortho_init=False, features_extractor_class=NoopFeaturesExtractor)
+    )
     model.learn(total_timesteps=10_000)
