@@ -24,9 +24,6 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
         # this parameter separately
         kwargs['num_bot_envs'] = len(kwargs.get('ai2s', []))
         super().__init__(*args, **kwargs)
-        # self.action_space = gym.spaces.MultiDiscrete(np.array([
-        #     [6, 4, 4, 4, 4, len(self.utt['unitTypes']), 7 * 7]
-        # ] * self.height * self.width).flatten())
         self.observation_space = gym.spaces.Dict({
             "obs": self.observation_space,
             "masks": gym.spaces.Box(
@@ -166,6 +163,12 @@ class HierachicalMultiCategoricalDistribution(Distribution):
     def proba_distribution_net(self, latent_dim: int) -> nn.Module:
         return nn.Identity()
 
+    # xxx(okachaiev): hack (or seems like the one)
+    # working with a mutable distribution object seems like the
+    # safest operation... as we change dimentionality a few times
+    # when switching between `forward` and `evaluate_actions` we
+    # recreate array of Categorical distributions of a different
+    # size
     def proba_distribution(self, action_logits: torch.Tensor) -> "HierachicalMultiCategoricalDistribution":
         action_logits = action_logits.reshape((-1,self.split_level,self.action_dims.sum()))
         self.distribution = [Categorical(logits=split) for split in torch.split(action_logits, tuple(self.action_dims), dim=-1)]
