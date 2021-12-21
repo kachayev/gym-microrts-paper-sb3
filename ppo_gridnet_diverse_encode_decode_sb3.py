@@ -157,8 +157,9 @@ class MicroRTSExtractor(nn.Module):
 
 class HierachicalMultiCategoricalDistribution(Distribution):
 
-    def __init__(self, split_level: int, action_dims: List[int]):
+    def __init__(self, num_envs: int, split_level: int, action_dims: List[int]):
         super(HierachicalMultiCategoricalDistribution, self).__init__()
+        self.num_envs = num_envs
         self.split_level = split_level
         self.action_dims = action_dims
 
@@ -180,10 +181,10 @@ class HierachicalMultiCategoricalDistribution(Distribution):
         return torch.stack([dist.entropy() for dist in self.distribution], dim=2).sum(dim=-1).sum(dim=-1)
 
     def sample(self) -> torch.Tensor:
-        return torch.stack([dist.sample() for dist in self.distribution], dim=2).reshape((1, -1))
+        return torch.stack([dist.sample() for dist in self.distribution], dim=2).reshape((self.num_envs, -1))
 
     def mode(self) -> torch.Tensor:
-        return torch.stack([torch.argmax(dist.probs, dim=2) for dist in self.distribution], dim=2).respahe((1, -1))
+        return torch.stack([torch.argmax(dist.probs, dim=2) for dist in self.distribution], dim=2).respahe((self.num_envs, -1))
 
     def actions_from_params(self, action_logits: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
         self.proba_distribution(action_logits)
@@ -198,6 +199,11 @@ class HierachicalMultiCategoricalDistribution(Distribution):
 class MicroRTSGridActorCritic(ActorCriticPolicy):
 
     def __init__(self, *args, **kwargs):
+        if 'num_envs' in kwargs:
+            num_envs = kwargs['num_envs']
+            del kwargs['num_envs']
+        else:
+            num_envs = 1
         super().__init__(*args, **kwargs)
         # xxx(okachaiev): hack
         # not sure if turning nets & extractors into identity
@@ -210,7 +216,7 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         self.value_net = nn.Identity()
         # xxx(okachaiev): hack
         # find a good way to pass parameters
-        self.action_dist = HierachicalMultiCategoricalDistribution(256, self.action_dist.action_dims[:7])
+        self.action_dist = HierachicalMultiCategoricalDistribution(num_envs, 256, self.action_dist.action_dims[:7])
 
     # xxx(okachaiev): feels like a hack
     def _get_action_dist_from_latent(self, latent_pi: torch.Tensor, latent_sde=False) -> Distribution:
@@ -241,9 +247,9 @@ if __name__ == "__main__":
         render_theme=2,
         ai2s=[
             microrts_ai.randomBiasedAI,
-            # microrts_ai.lightRushAI,
-            # microrts_ai.workerRushAI,
-            # microrts_ai.coacAI,
+            microrts_ai.lightRushAI,
+            microrts_ai.workerRushAI,
+            microrts_ai.coacAI,
         ],
         map_paths=["maps/16x16/basesWorkers16x16.xml"],
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
@@ -254,6 +260,6 @@ if __name__ == "__main__":
         'MicroRTSGridActorCritic',
         envs,
         verbose=1,
-        policy_kwargs=dict(ortho_init=False, features_extractor_class=NoopFeaturesExtractor)
+        policy_kwargs=dict(ortho_init=False, features_extractor_class=NoopFeaturesExtractor, num_envs=envs.num_envs)
     )
-    model.learn(total_timesteps=10_000)
+    model.learn(total_timesteps=1_000_000)
