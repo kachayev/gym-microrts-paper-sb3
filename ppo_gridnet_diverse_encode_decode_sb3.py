@@ -1,10 +1,11 @@
 import numpy as np
-import time
 import torch
 from torch import nn
+from torch.distributions.categorical import Categorical
+from typing import List, Tuple
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.distributions import MultiCategoricalDistribution
+from stable_baselines3.common.distributions import Distribution
 from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import get_device
@@ -154,6 +155,46 @@ class MicroRTSExtractor(nn.Module):
         return self.value_net(self.shared_net(obs))
 
 
+class HierachicalMultiCategoricalDistribution(Distribution):
+
+    def __init__(self, split_level: int, action_dims: List[int]):
+        super(HierachicalMultiCategoricalDistribution, self).__init__()
+        self.split_level = split_level
+        self.action_dims = action_dims
+
+    def proba_distribution_net(self, latent_dim: int) -> nn.Module:
+        return nn.Identity()
+
+    def proba_distribution(self, action_logits: torch.Tensor) -> "HierachicalMultiCategoricalDistribution":
+        action_logits = action_logits.reshape((-1,self.split_level,self.action_dims.sum()))
+        self.distribution = [Categorical(logits=split) for split in torch.split(action_logits, tuple(self.action_dims), dim=-1)]
+        return self
+
+    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+        actions = actions.reshape((-1,self.split_level,len(self.action_dims)))
+        return torch.stack(
+            [dist.log_prob(action) for dist, action in zip(self.distribution, torch.unbind(actions, dim=2))], dim=2
+        ).sum(dim=-1).sum(dim=-1)
+
+    def entropy(self) -> torch.Tensor:
+        return torch.stack([dist.entropy() for dist in self.distribution], dim=2).sum(dim=-1).sum(dim=-1)
+
+    def sample(self) -> torch.Tensor:
+        return torch.stack([dist.sample() for dist in self.distribution], dim=2).reshape((1, -1))
+
+    def mode(self) -> torch.Tensor:
+        return torch.stack([torch.argmax(dist.probs, dim=2) for dist in self.distribution], dim=2).respahe((1, -1))
+
+    def actions_from_params(self, action_logits: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
+        self.proba_distribution(action_logits)
+        return self.get_actions(deterministic=deterministic)
+
+    def log_prob_from_params(self, action_logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        actions = self.actions_from_params(action_logits)
+        log_prob = self.log_prob(actions)
+        return actions, log_prob
+
+
 class MicroRTSGridActorCritic(ActorCriticPolicy):
 
     def __init__(self, *args, **kwargs):
@@ -167,6 +208,13 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         # https://github.com/DLR-RM/stable-baselines3/blob/201fbffa8c40a628ecb2b30fd0973f3b171e6c4c/stable_baselines3/common/policies.py#L557
         # in case self.mlp_extractor.latent_dim_vf == 1
         self.value_net = nn.Identity()
+        # xxx(okachaiev): hack
+        # find a good way to pass parameters
+        self.action_dist = HierachicalMultiCategoricalDistribution(256, self.action_dist.action_dims[:7])
+
+    # xxx(okachaiev): feels like a hack
+    def _get_action_dist_from_latent(self, latent_pi: torch.Tensor, latent_sde=False) -> Distribution:
+        return self.action_dist.proba_distribution(action_logits=latent_pi)
 
     def _build_mlp_extractor(self) -> None:
         # xxx(okachaiev): would be nice if SB3 provided configuration for
