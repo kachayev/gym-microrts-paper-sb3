@@ -23,7 +23,6 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
         # this parameter separately
         kwargs['num_bot_envs'] = len(kwargs.get('ai2s', []))
         super().__init__(*args, **kwargs)
-        self.num_cells = self.height*self.width
         # self.action_space = gym.spaces.MultiDiscrete(np.array([
         #     [6, 4, 4, 4, 4, len(self.utt['unitTypes']), 7 * 7]
         # ] * self.height * self.width).flatten())
@@ -39,14 +38,6 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
 
     def get_action_mask(self):
         return super().get_action_mask().reshape(self.num_envs, -1)
-
-    def step_async(self, action):
-        action = action.reshape(self.num_envs, self.num_cells, -1)
-        return super().step_async(action)
-
-    def step(self, action):
-        action = action.reshape(self.num_envs, self.num_cells, -1)
-        return super().step(action)
 
     def step_wait(self):
         obs, rewards, dones, infos = super().step_wait()
