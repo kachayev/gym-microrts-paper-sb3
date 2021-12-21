@@ -8,47 +8,13 @@ from stable_baselines3.common.distributions import MultiCategoricalDistribution
 from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import get_device
-from stable_baselines3.common.vec_env import VecEnvWrapper
+from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor
 
 import gym
 import gym_microrts
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 from gym_microrts import microrts_ai
 
-# code from here:
-# https://github.com/vwxyzjn/gym-microrts-paper/blob/cf291b303c04e98be2f00acbbe6bbb2c23a8bac5/ppo_gridnet_diverse_encode_decode.py#L96
-class VecMonitor(VecEnvWrapper):
-    def __init__(self, venv):
-        VecEnvWrapper.__init__(self, venv)
-        self.eprets = None
-        self.eplens = None
-        self.epcount = 0
-        self.tstart = time.time()
-
-    def reset(self):
-        obs = self.venv.reset()
-        self.eprets = np.zeros(self.num_envs, 'f')
-        self.eplens = np.zeros(self.num_envs, 'i')
-        return obs
-
-    def step_wait(self):
-        obs, rews, dones, infos = self.venv.step_wait()
-        self.eprets += rews
-        self.eplens += 1
-
-        newinfos = list(infos[:])
-        for i in range(len(dones)):
-            if dones[i]:
-                info = infos[i].copy()
-                ret = self.eprets[i]
-                eplen = self.eplens[i]
-                epinfo = {'r': ret, 'l': eplen, 't': round(time.time() - self.tstart, 6)}
-                info['episode'] = epinfo
-                self.epcount += 1
-                self.eprets[i] = 0
-                self.eplens[i] = 0
-                newinfos[i] = info
-        return obs, rews, dones, newinfos
 
 
 class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
@@ -74,7 +40,10 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
 
     def get_action_mask(self):
         action_mask = np.array(self.vec_client.getMasks(0))
-        return action_mask[:,:,:,1:].reshape(self.num_envs, -1)
+        # print(action_mask.shape)
+        # print(np.array(self.get_action_mask()).shape)
+        # np.array(self.get_action_mask())
+        return np.array(super().get_action_mask())
 
     def step_async(self, action):
         action = action.reshape(self.num_envs, self.num_cells, -1)
@@ -171,8 +140,9 @@ class MicroRTSExtractor(nn.Module):
             nn.ReLU(),
             layer_init(nn.ConvTranspose2d(32, output_channels, 3, stride=2, padding=1, output_padding=1)),
             Transpose((0, 2, 3, 1)),
-            Reshape((-1,action_space_size))
+            Reshape((-1, 78)),
         ).to(self.device)
+        
 
         # xxx(okachaiev): hack (seems like)
         # not sure what is the correct approach in SB3
@@ -192,6 +162,10 @@ class MicroRTSExtractor(nn.Module):
     def forward(self, features):
         obs, masks = features
         shared_latent = self.shared_net(obs)
+        print(shared_latent.shape)
+        print(self.policy_net(shared_latent).shape)
+        print(masks.shape)
+        masks = masks.reshape(-1, 78)
         return self._mask_action_logits(self.policy_net(shared_latent), masks), self.value_net(shared_latent)
 
     def forward_actor(self, features):
@@ -241,9 +215,9 @@ if __name__ == "__main__":
             microrts_ai.randomBiasedAI,
             # microrts_ai.lightRushAI,
             # microrts_ai.workerRushAI,
-            # microrts_ai.coacAI,
+            microrts_ai.coacAI,
         ],
-        map_path="maps/16x16/basesWorkers16x16.xml",
+        map_paths=["maps/16x16/basesWorkers16x16.xml"],
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
     )
     envs = VecMonitor(envs)
