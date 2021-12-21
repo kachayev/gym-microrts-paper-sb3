@@ -106,7 +106,7 @@ class MicroRTSExtractor(nn.Module):
         # to know about these properties. maybe ABC class
         # with proper exception if the method is not implemented
         # would be cleaner?
-        self.latent_dim_pi = output_channels
+        self.latent_dim_pi = action_space_size
         self.latent_dim_vf = 1
     
         self.device = get_device(device)
@@ -135,7 +135,7 @@ class MicroRTSExtractor(nn.Module):
             nn.ReLU(),
             layer_init(nn.ConvTranspose2d(32, output_channels, 3, stride=2, padding=1, output_padding=1)),
             Transpose((0, 2, 3, 1)),
-            Reshape((-1,action_space_size))
+            Reshape((-1, action_space_size))
         ).to(self.device)
 
         # xxx(okachaiev): hack (seems like)
