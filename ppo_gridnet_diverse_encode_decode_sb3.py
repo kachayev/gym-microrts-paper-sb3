@@ -89,12 +89,8 @@ class NoopFeaturesExtractor(BaseFeaturesExtractor):
         self._observation_space = observation_space
         self._features_dim = features_dim
 
-    @property
-    def features_dim(self) -> int:
-        return self._features_dim
-
     def forward(self, observations):
-        observations
+        return observations
 
 # xxx(okachaiev): should this go to "feature extractor" configuration?
 class MicroRTSExtractor(nn.Module):
