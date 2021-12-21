@@ -11,7 +11,7 @@ Original code: [gym-microrts-paper](https://github.com/vwxyzjn/gym-microrts-pape
 ## Install
 
 Prerequisites:
-* Python 3.7+
+* Python 3.7.1+
 * Java 8.0+
 * FFmpeg (for video capturing)
 
