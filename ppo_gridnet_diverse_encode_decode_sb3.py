@@ -79,8 +79,8 @@ def parse_arguments():
     parser.add_argument('--target-kl', type=float, default=0.03,
                         help='the target-kl variable that is referred by --kl')
 
-    # xxx(okachaiev): I assume this one is called `clip_range` in SB3
-    parser.add_argument('--clip-coef', type=float, default=0.1,
+    # xxx(okachaiev): I assume this one is called `clip_range` in SB3 and `clip_range` in the paper
+    parser.add_argument('--clip-range', type=float, default=0.1,
                         help="the surrogate clipping coefficient")
 
     # xxx(okachaiev): SB3 is a bit more flexible and allows `clip_range_vf`
@@ -88,8 +88,8 @@ def parse_arguments():
     parser.add_argument('--clip-vloss', type=lambda x: bool(strtobool(x)), default=True, nargs='?', const=True,
                         help='Toggles wheter or not to use a clipped loss for the value function, as per the paper.')
 
-    # xxx(okachaiev): I assume this one is called `n_epochs` in SB3
-    parser.add_argument('--update-epochs', type=int, default=4,
+    # xxx(okachaiev): I assume this one is called `n_epochs` in SB3 and `update_epochs` in the paper
+    parser.add_argument('--n-epochs', type=int, default=4,
                         help="the K epochs to update the policy")
 
     # xxx(okachaiev): the code for the paper has advantages norm as a toggle (with True by default)
@@ -105,9 +105,7 @@ def parse_arguments():
         args.seed = int(time.time())
     args.experiment_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
 
-    args.clip_range = args.clip_coef
-    args.clip_range_vf = args.clip_coef if args.clip_vloss else None
-    args.n_epochs = args.update_epochs
+    args.clip_range_vf = args.clip_range if args.clip_vloss else None
 
     return args
 

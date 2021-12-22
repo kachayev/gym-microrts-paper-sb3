@@ -70,6 +70,17 @@ Using cpu device
 ------------------------------------------
 ```
 
+By default, all settings are set as close as possible to the original implementation from the paper as possible. Thought the script supports flexible params:
+
+```
+$ python ppo_gridnet_diverse_encode_decode_sb3.py \
+  --total-timesteps 10_000 \
+  --bot-envs coacAI=8 randomBiasedAI=8 \
+  --num-selfplay-envs 12 \
+  --batch-size 2048 \
+  --n-epochs 10
+```
+
 As soon as correctness of the implementation is verified, I will provide details on how to use RL Baselines3 Zoo for training and evaluations.
 
 ## Implementational Caveats
