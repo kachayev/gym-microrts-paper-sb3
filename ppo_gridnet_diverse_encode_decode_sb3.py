@@ -78,6 +78,8 @@ def parse_arguments():
                         help='minibatch size')
     parser.add_argument('--target-kl', type=float, default=0.03,
                         help='the target-kl variable that is referred by --kl')
+    parser.add_argument('--anneal-lr', type=lambda x: bool(strtobool(x)), default=True, nargs='?', const=True,
+                        help="Toggle learning rate annealing for policy and value networks")
 
     # xxx(okachaiev): I assume this one is called `clip_range` in SB3 and `clip_range` in the paper
     parser.add_argument('--clip-range', type=float, default=0.1,
@@ -98,14 +100,13 @@ def parse_arguments():
     # also, see this discussion:
     # https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/issues/102
 
-    # xxx(okachaiev): what about anneal LR?
-
     args = parser.parse_args()
     if not args.seed:
         args.seed = int(time.time())
     args.experiment_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
-
     args.clip_range_vf = args.clip_range if args.clip_vloss else None
+    if args.anneal_lr:
+        lr = lambda f: f * args.learning_rate
 
     return args
 
