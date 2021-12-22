@@ -128,6 +128,11 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
         masks = self.get_action_mask()
         return {"obs": obs, "masks": masks}
 
+    def seed(self, seed_value):
+        # xxx(okachaiev): it would be nice if we could pass seed value into
+        # the game env itself. just ignoring for now
+        pass
+
 
 class Transpose(nn.Module):
     def __init__(self, permutation):
@@ -368,6 +373,7 @@ if __name__ == "__main__":
         target_kl=args.target_kl,
         clip_range=args.clip_range,
         n_epochs=args.n_epochs,
+        seed=args.seed,
         device='auto',
     )
     model.learn(total_timesteps=args.total_timesteps)
