@@ -5,7 +5,7 @@ import time
 import torch
 from torch import nn
 from torch.distributions.categorical import Categorical
-from typing import List, Tuple
+from typing import Callable, List, Tuple, Union
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.distributions import Distribution
@@ -19,6 +19,19 @@ import gym_microrts
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 from gym_microrts import microrts_ai
 
+
+def _parse_bot_envs(values: Union[str, List[str]]) -> List[Callable]:
+    if isinstance(values, str):
+        values = values.split(' ')
+    bots = []
+    for value in values:
+        key, value = value.split('=')
+        bots.extend([getattr(microrts_ai, key) for _ in range(int(value))])
+    return bots
+
+class ParseBotEnvs(argparse.Action):
+    def __call__(self, _parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, _parse_bot_envs(values))
 
 # default argument values are defined to be as close to the paper implementation as possible
 # https://github.com/vwxyzjn/gym-microrts-paper/blob/cf291b303c04e98be2f00acbbe6bbb2c23a8bac5/ppo_gridnet_diverse_encode_decode.py#L25
@@ -36,8 +49,9 @@ def parse_arguments():
                         help='weather to capture videos of the agent performances (check out `videos` folder)')
     parser.add_argument('--max-steps', type=int, default=2_000,
                         help='max number of steps per game environment')
-    parser.add_argument('--num-bot-envs', type=int, default=24,
-                        help='the number of bot game environment; 16 bot envs measn 16 games')
+    parser.add_argument('--bot-envs', nargs='*', action=ParseBotEnvs,
+                        default=_parse_bot_envs('randomBiasedAI=2 lightRushAI=2 workerRushAI=2 coacAI=18'),
+                        help='bot envs to setup following "bot_name=<num envs>" format')
     parser.add_argument('--num-selfplay-envs', type=int, default=0,
                         help='the number of self play envs; 16 self play envs means 8 games')
 
@@ -346,12 +360,7 @@ if __name__ == "__main__":
         num_selfplay_envs=args.num_selfplay_envs,
         max_steps=args.max_steps,
         render_theme=2,
-        ai2s=[
-            microrts_ai.randomBiasedAI,
-            microrts_ai.lightRushAI,
-            microrts_ai.workerRushAI,
-            microrts_ai.coacAI,
-        ],
+        ai2s=args.bot_envs,
         map_paths=["maps/16x16/basesWorkers16x16.xml"],
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
     )
