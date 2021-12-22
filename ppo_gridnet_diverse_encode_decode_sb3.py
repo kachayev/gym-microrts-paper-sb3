@@ -201,13 +201,25 @@ class HierachicalMultiCategoricalDistribution(Distribution):
 
 class MicroRTSGridActorCritic(ActorCriticPolicy):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, observation_space, action_space, *args, **kwargs):
         if 'num_envs' in kwargs:
             num_envs = kwargs['num_envs']
             del kwargs['num_envs']
         else:
             num_envs = 1
-        super().__init__(*args, **kwargs)
+
+        self.height, self.width, self.input_channels = observation_space['obs'].shape
+        self.num_cells = self.height * self.width
+        self.action_plane = action_space.nvec[:action_space.nvec.size // self.num_cells]
+
+        super().__init__(observation_space, action_space, *args, **kwargs)
+
+        self.action_dist = HierachicalMultiCategoricalDistribution(
+            num_envs,
+            self.num_cells,
+            self.action_plane
+        )
+
         # xxx(okachaiev): hack
         # not sure if turning nets & extractors into identity
         # layers is how it supposed to be done
@@ -217,23 +229,21 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         # https://github.com/DLR-RM/stable-baselines3/blob/201fbffa8c40a628ecb2b30fd0973f3b171e6c4c/stable_baselines3/common/policies.py#L557
         # in case self.mlp_extractor.latent_dim_vf == 1
         self.value_net = nn.Identity()
-        # xxx(okachaiev): hack
-        # find a good way to pass parameters
-        self.action_dist = HierachicalMultiCategoricalDistribution(num_envs, 256, self.action_dist.action_dims[:7])
 
     # xxx(okachaiev): feels like a hack
+    # it would be much nicers if we can return distribution object from
+    # extract call without passing latent values thought the policy object
     def _get_action_dist_from_latent(self, latent_pi: torch.Tensor, latent_sde=False) -> Distribution:
         return self.action_dist.proba_distribution(action_logits=latent_pi)
 
+    # xxx(okachaiev): would be nice if SB3 provided configuration for
+    # MlpExtractor class. in this case I wouldn't need to reload
+    # "internal" function of the class
+    # xxx(okachaiev): also, should it be called "latent extractor"?
     def _build_mlp_extractor(self) -> None:
-        # xxx(okachaiev): would be nice if SB3 provided configuration for
-        # MlpExtractor class. in this case I wouldn't need to reload
-        # "internal" function of the class
         self.mlp_extractor = MicroRTSExtractor(
-            input_channels=27,
-            # output_channels=self.action_space.nvec[1:].sum(),
-            # xxx(okachaiev): need to find a way to propagate parameters
-            output_channels=78,
+            input_channels=self.input_channels,
+            output_channels=self.action_plane.sum(),
             action_space_size=self.action_space.nvec.sum(),
         )
 
