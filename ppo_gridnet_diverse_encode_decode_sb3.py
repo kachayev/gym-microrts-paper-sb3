@@ -1,4 +1,5 @@
 import argparse
+from distutils.util import strtobool
 import numpy as np
 import os
 import time
@@ -15,9 +16,8 @@ from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecMonitor
 
 import gym
-import gym_microrts
-from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 from gym_microrts import microrts_ai
+from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 
 
 def _parse_bot_envs(values: Union[str, List[str]]) -> List[Callable]:
@@ -28,6 +28,7 @@ def _parse_bot_envs(values: Union[str, List[str]]) -> List[Callable]:
         key, value = value.split('=')
         bots.extend([getattr(microrts_ai, key) for _ in range(int(value))])
     return bots
+
 
 class ParseBotEnvs(argparse.Action):
     def __call__(self, _parser, namespace, values, option_string=None):
