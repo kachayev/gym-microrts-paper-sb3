@@ -1,4 +1,7 @@
+import argparse
 import numpy as np
+import os
+import time
 import torch
 from torch import nn
 from torch.distributions.categorical import Categorical
@@ -15,6 +18,84 @@ import gym
 import gym_microrts
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 from gym_microrts import microrts_ai
+
+
+# default argument values are defined to be as close to the paper implementation as possible
+# https://github.com/vwxyzjn/gym-microrts-paper/blob/cf291b303c04e98be2f00acbbe6bbb2c23a8bac5/ppo_gridnet_diverse_encode_decode.py#L25
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='PPO agent')
+
+    # environment setup
+    parser.add_argument('--exp-folder', type=str, default="agents",
+                        help='folder to store experiments')
+    parser.add_argument('--exp-name', type=str, default=os.path.basename(__file__).rstrip(".py"),
+                        help='the name of this experiment')
+    parser.add_argument('--seed', type=int, default=1,
+                        help='seed of the experiment')
+    parser.add_argument('--capture-video', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
+                        help='weather to capture videos of the agent performances (check out `videos` folder)')
+    parser.add_argument('--max-steps', type=int, default=2_000,
+                        help='max number of steps per game environment')
+    parser.add_argument('--num-bot-envs', type=int, default=24,
+                        help='the number of bot game environment; 16 bot envs measn 16 games')
+    parser.add_argument('--num-selfplay-envs', type=int, default=0,
+                        help='the number of self play envs; 16 self play envs means 8 games')
+
+    # hyperparams
+    parser.add_argument('--total-timesteps', type=int, default=100_000_000,
+                        help='total timesteps of the experiments')
+    parser.add_argument('--torch-deterministic', type=lambda x: bool(strtobool(x)), default=True, nargs='?', const=True,
+                        help='if toggled, `torch.backends.cudnn.deterministic=False`')
+    parser.add_argument('--learning-rate', type=float, default=2.5e-4,
+                        help='the learning rate of the optimizer')
+    parser.add_argument('--gamma', type=float, default=0.99,
+                        help='the discount factor gamma')
+    parser.add_argument('--gae-lambda', type=float, default=0.95,
+                        help='the lambda for the general advantage estimation')
+    parser.add_argument('--ent-coef', type=float, default=0.01,
+                        help="coefficient of the entropy")
+    parser.add_argument('--vf-coef', type=float, default=0.5,
+                        help="coefficient of the value function")
+    parser.add_argument('--max-grad-norm', type=float, default=0.5,
+                        help='the maximum norm for the gradient clipping')
+    parser.add_argument('--num-steps', type=int, default=256,
+                        help='the number of steps per game environment')
+    parser.add_argument('--batch-size', type=int, default=1024,
+                        help='minibatch size')
+    parser.add_argument('--target-kl', type=float, default=0.03,
+                        help='the target-kl variable that is referred by --kl')
+
+    # xxx(okachaiev): I assume this one is called `clip_range` in SB3
+    parser.add_argument('--clip-coef', type=float, default=0.1,
+                        help="the surrogate clipping coefficient")
+
+    # xxx(okachaiev): SB3 is a bit more flexible and allows `clip_range_vf`
+    # to be set independently
+    parser.add_argument('--clip-vloss', type=lambda x: bool(strtobool(x)), default=True, nargs='?', const=True,
+                        help='Toggles wheter or not to use a clipped loss for the value function, as per the paper.')
+
+    # xxx(okachaiev): I assume this one is called `n_epochs` in SB3
+    parser.add_argument('--update-epochs', type=int, default=4,
+                        help="the K epochs to update the policy")
+
+    # xxx(okachaiev): the code for the paper has advantages norm as a toggle (with True by default)
+    # https://github.com/vwxyzjn/gym-microrts-paper/blob/cf291b303c04e98be2f00acbbe6bbb2c23a8bac5/ppo_gridnet_diverse_encode_decode.py#L81
+    # SB3 does adv norm always, though I'm not sure it was mentioned in the origin paper
+    # also, see this discussion:
+    # https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/issues/102
+
+    # xxx(okachaiev): what about anneal LR?
+
+    args = parser.parse_args()
+    if not args.seed:
+        args.seed = int(time.time())
+    args.experiment_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
+
+    args.clip_range = args.clip_coef
+    args.clip_range_vf = args.clip_coef if args.clip_vloss else None
+    args.n_epochs = args.update_epochs
+
+    return args
 
 
 class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
@@ -254,9 +335,11 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
 if __name__ == "__main__":
     register_policy('MicroRTSGridActorCritic', MicroRTSGridActorCritic)
 
+    args = parse_arguments()
+
     envs = CustomMicroRTSGridMode(
-        num_selfplay_envs=0,
-        max_steps=2000,
+        num_selfplay_envs=args.num_selfplay_envs,
+        max_steps=args.max_steps,
         render_theme=2,
         ai2s=[
             microrts_ai.randomBiasedAI,
@@ -273,6 +356,19 @@ if __name__ == "__main__":
         'MicroRTSGridActorCritic',
         envs,
         verbose=1,
-        policy_kwargs=dict(ortho_init=False, features_extractor_class=NoopFeaturesExtractor, num_envs=envs.num_envs)
+        policy_kwargs=dict(ortho_init=False, features_extractor_class=NoopFeaturesExtractor, num_envs=envs.num_envs),
+        learning_rate=args.learning_rate,
+        gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
+        ent_coef=args.ent_coef,
+        vf_coef=args.vf_coef,
+        max_grad_norm=args.max_grad_norm,
+        n_steps=args.num_steps,
+        batch_size=args.batch_size,
+        target_kl=args.target_kl,
+        clip_range=args.clip_range,
+        n_epochs=args.n_epochs,
+        device='auto',
     )
-    model.learn(total_timesteps=1_000_000)
+    model.learn(total_timesteps=args.total_timesteps)
+    model.save(f"{args.exp_folder}/{args.experiment_name}")
