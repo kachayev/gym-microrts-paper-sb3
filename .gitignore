@@ -2,3 +2,4 @@ venv/
 *.log
 __pycache__
 agents/
+videos/
