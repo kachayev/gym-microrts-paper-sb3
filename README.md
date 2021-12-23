@@ -36,38 +36,40 @@ $ python ppo_gridnet_diverse_encode_decode_sb3.py
 If everything is setup correctly, you'll see typicall SB3 verbose logging:
 
 ```
-Using cpu device
+Using cuda device
 ---------------------------------
-| rollout/           |          |
-|    ep_len_mean     | 2e+03    |
-|    ep_rew_mean     | 0.0      |
+| microrts/          |          |
+|    avg_exec_time   | 0.00409  |
+|    num_calls       | 256      |
+|    total_exec_time | 1.05     |
 | time/              |          |
-|    fps             | 179      |
+|    fps             | 560      |
 |    iterations      | 1        |
-|    time_elapsed    | 11       |
-|    total_timesteps | 2048     |
+|    time_elapsed    | 10       |
+|    total_timesteps | 6144     |
 ---------------------------------
-------------------------------------------
-| rollout/                |              |
-|    ep_len_mean          | 1.72e+03     |
-|    ep_rew_mean          | -5.0         |
-| time/                   |              |
-|    fps                  | 55           |
-|    iterations           | 2            |
-|    time_elapsed         | 74           |
-|    total_timesteps      | 4096         |
-| train/                  |              |
-|    approx_kl            | 0.0056759235 |
-|    clip_fraction        | 0.0861       |
-|    clip_range           | 0.2          |
-|    entropy_loss         | -5.65        |
-|    explained_variance   | 0.412        |
-|    learning_rate        | 0.0003       |
-|    loss                 | -0.024       |
-|    n_updates            | 10           |
-|    policy_gradient_loss | -0.00451     |
-|    value_loss           | 0.00413      |
-------------------------------------------
+-----------------------------------------
+| microrts/               |             |
+|    avg_exec_time        | 0.00321     |
+|    num_calls            | 512         |
+|    total_exec_time      | 1.64        |
+| time/                   |             |
+|    fps                  | 164         |
+|    iterations           | 2           |
+|    time_elapsed         | 74          |
+|    total_timesteps      | 12288       |
+| train/                  |             |
+|    approx_kl            | 0.001475019 |
+|    clip_fraction        | 0.0575      |
+|    clip_range           | 0.1         |
+|    entropy_loss         | -1.46       |
+|    explained_variance   | 0.00712     |
+|    learning_rate        | 0.00025     |
+|    loss                 | 0.0579      |
+|    n_updates            | 4           |
+|    policy_gradient_loss | -0.0032     |
+|    value_loss           | 0.261       |
+-----------------------------------------
 ```
 
 By default, all settings are set as close as possible to the original implementation from the paper as possible. Thought the script supports flexible params:

@@ -9,6 +9,7 @@ from torch.distributions.categorical import Categorical
 from typing import Callable, List, Tuple, Union
 
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.distributions import Distribution
 from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -128,12 +129,37 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
                 dtype=np.int32
             ),
         })
+        self._env_perf_calls, self._env_perf_exec_time = (0, 0)
 
     def get_action_mask(self):
         return super().get_action_mask().reshape(self.num_envs, -1)
 
+    def get_and_reset_perf(self):
+        current_perf = self.get_perf()
+        self._env_perf_calls, self._env_perf_exec_time = (0, 0)
+        return current_perf
+
+    def get_perf(self):
+        return self._env_perf_calls, self._env_perf_exec_time
+
+    # def step_wait(self):
+    #     obs, rewards, dones, infos = super().step_wait()
+    #     masks = self.get_action_mask()
+    #     return {"obs": obs, "masks": masks}, rewards, dones, infos
+
+    # xxx(okachaiev): reimplementing `step_wait` to measure performance
+    # of `gameStep` call to the underlying environment
     def step_wait(self):
-        obs, rewards, dones, infos = super().step_wait()
+        t_start = time.time()
+        responses = self.vec_client.gameStep(self.actions, [0 for _ in range(self.num_envs)])
+        self._env_perf_exec_time += time.time() - t_start
+        self._env_perf_calls += 1
+        raw_obs, reward, done = np.array(responses.observation), np.array(responses.reward), np.array(responses.done)
+        obs = []
+        for ro in raw_obs:
+            obs += [self._encode_obs(ro)]
+        infos = [{"raw_rewards": item} for item in reward]
+        obs, rewards, dones, infos = np.array(obs), reward @ self.reward_weight, done[:,0], infos
         masks = self.get_action_mask()
         return {"obs": obs, "masks": masks}, rewards, dones, infos
 
@@ -351,6 +377,28 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         return obs['obs'].float(), obs['masks'].bool()
 
 
+class PerformanceCallback(BaseCallback):
+
+    def _on_rollout_end(self) -> None:
+        env = self.model.get_env()
+        num_calls, exec_time = env.get_perf()
+        self.logger.record("microrts/num_calls", num_calls)
+        self.logger.record("microrts/total_exec_time", exec_time)
+        self.logger.record("microrts/avg_exec_time", exec_time/num_calls)
+
+    def _on_training_start(self) -> None:
+        pass
+
+    def _on_training_end(self) -> None:
+        pass
+
+    def _on_rollout_start(self) -> None:
+        pass
+
+    def _on_step(self) -> bool:
+        return True
+
+
 if __name__ == "__main__":
     register_policy('MicroRTSGridActorCritic', MicroRTSGridActorCritic)
 
@@ -370,7 +418,11 @@ if __name__ == "__main__":
         'MicroRTSGridActorCritic',
         envs,
         verbose=1,
-        policy_kwargs=dict(ortho_init=False, features_extractor_class=NoopFeaturesExtractor, num_envs=envs.num_envs),
+        policy_kwargs=dict(
+            ortho_init=False,
+            features_extractor_class=NoopFeaturesExtractor,
+            num_envs=envs.num_envs
+        ),
         learning_rate=args.learning_rate,
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
@@ -385,5 +437,5 @@ if __name__ == "__main__":
         seed=args.seed,
         device='auto',
     )
-    model.learn(total_timesteps=args.total_timesteps)
+    model.learn(total_timesteps=args.total_timesteps, callback=PerformanceCallback())
     model.save(f"{args.exp_folder}/{args.experiment_name}")
