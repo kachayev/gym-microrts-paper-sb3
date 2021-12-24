@@ -9,7 +9,6 @@ from torch.distributions.categorical import Categorical
 from typing import Callable, List, Tuple, Union
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.distributions import Distribution
 from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -129,37 +128,12 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
                 dtype=np.int32
             ),
         })
-        self._env_perf_calls, self._env_perf_exec_time = (0, 0)
 
     def get_action_mask(self):
         return super().get_action_mask().reshape(self.num_envs, -1)
 
-    def get_and_reset_perf(self):
-        current_perf = self.get_perf()
-        self._env_perf_calls, self._env_perf_exec_time = (0, 0)
-        return current_perf
-
-    def get_perf(self):
-        return self._env_perf_calls, self._env_perf_exec_time
-
-    # def step_wait(self):
-    #     obs, rewards, dones, infos = super().step_wait()
-    #     masks = self.get_action_mask()
-    #     return {"obs": obs, "masks": masks}, rewards, dones, infos
-
-    # xxx(okachaiev): reimplementing `step_wait` to measure performance
-    # of `gameStep` call to the underlying environment
     def step_wait(self):
-        t_start = time.time()
-        responses = self.vec_client.gameStep(self.actions, [0 for _ in range(self.num_envs)])
-        self._env_perf_exec_time += time.time() - t_start
-        self._env_perf_calls += 1
-        raw_obs, reward, done = np.array(responses.observation), np.array(responses.reward), np.array(responses.done)
-        obs = []
-        for ro in raw_obs:
-            obs += [self._encode_obs(ro)]
-        infos = [{"raw_rewards": item} for item in reward]
-        obs, rewards, dones, infos = np.array(obs), reward @ self.reward_weight, done[:,0], infos
+        obs, rewards, dones, infos = super().step_wait()
         masks = self.get_action_mask()
         return {"obs": obs, "masks": masks}, rewards, dones, infos
 
@@ -280,9 +254,9 @@ class MicroRTSExtractor(nn.Module):
 
 class HierachicalMultiCategoricalDistribution(Distribution):
 
-    def __init__(self, num_envs: int, split_level: int, action_dims: List[int]):
+    def __init__(self, split_level: int, action_dims: List[int]):
         super(HierachicalMultiCategoricalDistribution, self).__init__()
-        self.num_envs = num_envs
+        self.num_envs = None
         self.split_level = split_level
         self.action_dims = action_dims
 
@@ -297,6 +271,7 @@ class HierachicalMultiCategoricalDistribution(Distribution):
     # size
     def proba_distribution(self, action_logits: torch.Tensor) -> "HierachicalMultiCategoricalDistribution":
         action_logits = action_logits.reshape((-1,self.split_level,self.action_dims.sum()))
+        self.num_envs = action_logits.shape[0]
         self.distribution = [Categorical(logits=split) for split in torch.split(action_logits, tuple(self.action_dims), dim=-1)]
         return self
 
@@ -328,23 +303,13 @@ class HierachicalMultiCategoricalDistribution(Distribution):
 class MicroRTSGridActorCritic(ActorCriticPolicy):
 
     def __init__(self, observation_space, action_space, *args, **kwargs):
-        if 'num_envs' in kwargs:
-            num_envs = kwargs['num_envs']
-            del kwargs['num_envs']
-        else:
-            num_envs = 1
-
         self.height, self.width, self.input_channels = observation_space['obs'].shape
         self.num_cells = self.height * self.width
         self.action_plane = action_space.nvec[:action_space.nvec.size // self.num_cells]
 
         super().__init__(observation_space, action_space, *args, **kwargs)
 
-        self.action_dist = HierachicalMultiCategoricalDistribution(
-            num_envs,
-            self.num_cells,
-            self.action_plane
-        )
+        self.action_dist = HierachicalMultiCategoricalDistribution(self.num_cells, self.action_plane)
 
         # xxx(okachaiev): hack
         # not sure if turning nets & extractors into identity
@@ -377,28 +342,6 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         return obs['obs'].float(), obs['masks'].bool()
 
 
-class PerformanceCallback(BaseCallback):
-
-    def _on_rollout_end(self) -> None:
-        env = self.model.get_env()
-        num_calls, exec_time = env.get_perf()
-        self.logger.record("microrts/num_calls", num_calls)
-        self.logger.record("microrts/total_exec_time", exec_time)
-        self.logger.record("microrts/avg_exec_time", exec_time/num_calls)
-
-    def _on_training_start(self) -> None:
-        pass
-
-    def _on_training_end(self) -> None:
-        pass
-
-    def _on_rollout_start(self) -> None:
-        pass
-
-    def _on_step(self) -> bool:
-        return True
-
-
 if __name__ == "__main__":
     register_policy('MicroRTSGridActorCritic', MicroRTSGridActorCritic)
 
@@ -412,7 +355,7 @@ if __name__ == "__main__":
         map_paths=["maps/16x16/basesWorkers16x16.xml"],
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
     )
-    envs = VecMonitor(envs)
+    envs = VecMonitor(envs, info_keywords=("microrts_stats",))
 
     model = PPO(
         'MicroRTSGridActorCritic',
@@ -421,7 +364,6 @@ if __name__ == "__main__":
         policy_kwargs=dict(
             ortho_init=False,
             features_extractor_class=NoopFeaturesExtractor,
-            num_envs=envs.num_envs
         ),
         learning_rate=args.learning_rate,
         gamma=args.gamma,
@@ -437,5 +379,5 @@ if __name__ == "__main__":
         seed=args.seed,
         device='auto',
     )
-    model.learn(total_timesteps=args.total_timesteps, callback=PerformanceCallback())
+    model.learn(total_timesteps=args.total_timesteps)
     model.save(f"{args.exp_folder}/{args.experiment_name}")
