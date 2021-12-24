@@ -19,6 +19,24 @@ import gym
 from gym_microrts import microrts_ai
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 
+# import for custom action dist parameter
+import torch as th
+from typing import Any, Dict, Optional, Type
+from stable_baselines3.common.distributions import (
+    BernoulliDistribution,
+    CategoricalDistribution,
+    DiagGaussianDistribution,
+    Distribution,
+    MultiCategoricalDistribution,
+    StateDependentNoiseDistribution,
+    make_proba_distribution,
+)
+from stable_baselines3.common.torch_layers import (
+    FlattenExtractor,
+    NatureCNN
+)
+from stable_baselines3.common.type_aliases import Schedule
+
 
 def _parse_bot_envs(values: Union[str, List[str]]) -> List[Callable]:
     if isinstance(values, str):
@@ -254,11 +272,13 @@ class MicroRTSExtractor(nn.Module):
 
 class HierachicalMultiCategoricalDistribution(Distribution):
 
-    def __init__(self, split_level: int, action_dims: List[int]):
+    def __init__(self, action_space, num_cells=256):
         super(HierachicalMultiCategoricalDistribution, self).__init__()
         self.num_envs = None
-        self.split_level = split_level
-        self.action_dims = action_dims
+        self.num_cells = num_cells
+        self.action_dims = action_space.nvec[:action_space.nvec.size // self.num_cells]
+        self.action_dims_total = self.action_dims.sum()
+        self.action_dims_size = len(self.action_dims)
 
     def proba_distribution_net(self, latent_dim: int) -> nn.Module:
         return nn.Identity()
@@ -270,13 +290,13 @@ class HierachicalMultiCategoricalDistribution(Distribution):
     # recreate array of Categorical distributions of a different
     # size
     def proba_distribution(self, action_logits: torch.Tensor) -> "HierachicalMultiCategoricalDistribution":
-        action_logits = action_logits.reshape((-1,self.split_level,self.action_dims.sum()))
+        action_logits = action_logits.reshape((-1,self.num_cells,self.action_dims_total))
         self.num_envs = action_logits.shape[0]
         self.distribution = [Categorical(logits=split) for split in torch.split(action_logits, tuple(self.action_dims), dim=-1)]
         return self
 
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
-        actions = actions.reshape((-1,self.split_level,len(self.action_dims)))
+        actions = actions.reshape((-1,self.num_cells,self.action_dims_size))
         return torch.stack(
             [dist.log_prob(action) for dist, action in zip(self.distribution, torch.unbind(actions, dim=2))], dim=2
         ).sum(dim=-1).sum(dim=-1)
@@ -300,7 +320,233 @@ class HierachicalMultiCategoricalDistribution(Distribution):
         return actions, log_prob
 
 
-class MicroRTSGridActorCritic(ActorCriticPolicy):
+class CustomActionDistActorCriticPolicy(ActorCriticPolicy):
+
+    def __init__(
+        self,
+        observation_space: gym.spaces.Space,
+        action_space: gym.spaces.Space,
+        lr_schedule: Schedule,
+        net_arch: Optional[List[Union[int, Dict[str, List[int]]]]] = None,
+        activation_fn: Type[nn.Module] = nn.Tanh,
+        ortho_init: bool = True,
+        use_sde: bool = False,
+        log_std_init: float = 0.0,
+        full_std: bool = True,
+        sde_net_arch: Optional[List[int]] = None,
+        use_expln: bool = False,
+        squash_output: bool = False,
+        features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
+        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
+        normalize_images: bool = True,
+        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: Optional[Dict[str, Any]] = None,
+        action_dist_class: Optional[Type[Distribution]] = None,
+        action_dist_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+
+        if optimizer_kwargs is None:
+            optimizer_kwargs = {}
+            # Small values to avoid NaN in Adam optimizer
+            if optimizer_class == th.optim.Adam:
+                optimizer_kwargs["eps"] = 1e-5
+
+        super(ActorCriticPolicy, self).__init__(
+            observation_space,
+            action_space,
+            features_extractor_class,
+            features_extractor_kwargs,
+            optimizer_class=optimizer_class,
+            optimizer_kwargs=optimizer_kwargs,
+            squash_output=squash_output,
+        )
+
+        # Default network architecture, from stable-baselines
+        if net_arch is None:
+            if features_extractor_class == NatureCNN:
+                net_arch = []
+            else:
+                net_arch = [dict(pi=[64, 64], vf=[64, 64])]
+
+        self.net_arch = net_arch
+        self.activation_fn = activation_fn
+        self.ortho_init = ortho_init
+
+        self.features_extractor = features_extractor_class(self.observation_space, **self.features_extractor_kwargs)
+        self.features_dim = self.features_extractor.features_dim
+
+        self.normalize_images = normalize_images
+        self.log_std_init = log_std_init
+        dist_kwargs = {}
+        # Keyword arguments for gSDE distribution
+        if use_sde:
+            dist_kwargs.update({
+                "full_std": full_std,
+                "squash_output": squash_output,
+                "use_expln": use_expln,
+                "learn_features": sde_net_arch is not None,
+            })
+
+        self.sde_features_extractor = None
+        self.sde_net_arch = sde_net_arch
+        self.use_sde = use_sde
+        self.dist_kwargs = dist_kwargs
+
+        self.custom_action_dist_class = action_dist_class
+        self.custom_action_dist_kwargs = action_dist_kwargs or {}
+        # Action distribution
+        if action_dist_class is None:
+            self.action_dist = make_proba_distribution(
+                action_space,
+                use_sde=use_sde,
+                dist_kwargs=dist_kwargs,
+            )
+        else:
+            # xxx(okachaiev): merge with `dist_kwargs`?
+            self.action_dist = action_dist_class(action_space, **self.custom_action_dist_kwargs)
+
+        self._build(lr_schedule)
+
+    def _get_constructor_parameters(self) -> Dict[str, Any]:
+        data = super()._get_constructor_parameters()
+
+        default_none_kwargs = self.dist_kwargs or collections.defaultdict(lambda: None)
+
+        data.update(
+            dict(
+                net_arch=self.net_arch,
+                activation_fn=self.activation_fn,
+                use_sde=self.use_sde,
+                log_std_init=self.log_std_init,
+                squash_output=default_none_kwargs["squash_output"],
+                full_std=default_none_kwargs["full_std"],
+                sde_net_arch=self.sde_net_arch,
+                use_expln=default_none_kwargs["use_expln"],
+                lr_schedule=self._dummy_schedule,  # dummy lr schedule, not needed for loading policy alone
+                ortho_init=self.ortho_init,
+                optimizer_class=self.optimizer_class,
+                optimizer_kwargs=self.optimizer_kwargs,
+                features_extractor_class=self.features_extractor_class,
+                features_extractor_kwargs=self.features_extractor_kwargs,
+                # xxx(okachaiev): simply add custom action dist parameters 
+                action_dist_class=self.custom_action_dist_class,
+                action_dist_kwargs=self.custom_action_dist_kwargs,
+            )
+        )
+        return data
+
+    # xxx(okachaiev): what if my distribution also needs this?
+    # we can use trait class "WeightsSampler" that declares as single
+    # method `sample_weights`. and use isinstance check. we can also directly
+    # check if method is in there, which is quite common in Python,
+    # but might be confusing for users of the API
+    def reset_noise(self, n_envs: int = 1) -> None:
+        """
+        Sample new weights for the exploration matrix.
+
+        :param n_envs:
+        """
+        assert isinstance(self.action_dist, StateDependentNoiseDistribution), "reset_noise() is only available when using gSDE"
+        self.action_dist.sample_weights(self.log_std, batch_size=n_envs)
+
+
+    def _build(self, lr_schedule: Schedule) -> None:
+        """
+        Create the networks and the optimizer.
+
+        :param lr_schedule: Learning rate schedule
+            lr_schedule(1) is the initial learning rate
+        """
+        self._build_mlp_extractor()
+
+        latent_dim_pi = self.mlp_extractor.latent_dim_pi
+
+        # Separate features extractor for gSDE
+        if self.sde_net_arch is not None:
+            self.sde_features_extractor, latent_sde_dim = create_sde_features_extractor(
+                self.features_dim, self.sde_net_arch, self.activation_fn
+            )
+
+        if isinstance(self.action_dist, DiagGaussianDistribution):
+            self.action_net, self.log_std = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi, log_std_init=self.log_std_init
+            )
+        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
+            latent_sde_dim = latent_dim_pi if self.sde_net_arch is None else latent_sde_dim
+            self.action_net, self.log_std = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi, latent_sde_dim=latent_sde_dim, log_std_init=self.log_std_init
+            )
+        # xxx(okachaiev): simplified code a little bit
+        elif isinstance(self.action_dist, (CategoricalDistribution, MultiCategoricalDistribution, BernoulliDistribution)):
+            self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+        elif self.custom_action_dist_class is not None:
+            # xxx(okachaiev): same comment here as with `_get_action_dist_from_latent`
+            # seems like a hack. Technically, there's no need to check 3 dist above + this
+            # "custom" use case. we should rely on the fact that dist is a subclass of `Distribution`
+            # and just call `proba_distribution_net` with appropriate set of inputs (how to know
+            # which of them are appropriate is harder question though)
+            self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+        else:
+            raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
+
+        self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
+        # Init weights: use orthogonal initialization
+        # with small initial weight for the output
+        if self.ortho_init:
+            # TODO: check for features_extractor
+            # Values from stable-baselines.
+            # features_extractor/mlp values are
+            # originally from openai/baselines (default gains/init_scales).
+            module_gains = {
+                self.features_extractor: np.sqrt(2),
+                self.mlp_extractor: np.sqrt(2),
+                self.action_net: 0.01,
+                self.value_net: 1,
+            }
+            for module, gain in module_gains.items():
+                module.apply(partial(self.init_weights, gain=gain))
+
+        # Setup optimizer with initial learning rate
+        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+
+    def _get_action_dist_from_latent(self, latent_pi: th.Tensor, latent_sde: Optional[th.Tensor] = None) -> Distribution:
+        """
+        Retrieve action distribution given the latent codes.
+
+        :param latent_pi: Latent code for the actor
+        :param latent_sde: Latent code for the gSDE exploration function
+        :return: Action distribution
+        """
+        mean_actions = self.action_net(latent_pi)
+
+        if isinstance(self.action_dist, DiagGaussianDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std)
+        elif isinstance(self.action_dist, CategoricalDistribution):
+            # Here mean_actions are the logits before the softmax
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, MultiCategoricalDistribution):
+            # Here mean_actions are the flattened logits
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, BernoulliDistribution):
+            # Here mean_actions are the logits (before rounding to get the binary actions)
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_sde)
+        elif self.custom_action_dist_class is not None:
+            # xxx(okachaeiv): if log_std or latent_sde are needed, have to subclass from the
+            # corresponding distribution. not sure this is going to be obvious for users :(
+            # maybe their's a better way to declare what information is neccessary for each call?
+            # also, why `action_net` is applied here and not in the distribution?
+            # it seems if distribution class maintain `action_net` internally and applies it when
+            # necessary, the flow is more straightfoward. e.g. no need to deal with `proba_distribution_net`
+            # at all, -- most likely it's done this way to incorportate layer into nn.Module :(
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        else:
+            raise ValueError("Invalid action distribution")
+
+
+
+class MicroRTSGridActorCritic(CustomActionDistActorCriticPolicy):
 
     def __init__(self, observation_space, action_space, *args, **kwargs):
         self.height, self.width, self.input_channels = observation_space['obs'].shape
@@ -308,8 +554,6 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         self.action_plane = action_space.nvec[:action_space.nvec.size // self.num_cells]
 
         super().__init__(observation_space, action_space, *args, **kwargs)
-
-        self.action_dist = HierachicalMultiCategoricalDistribution(self.num_cells, self.action_plane)
 
         # xxx(okachaiev): hack
         # not sure if turning nets & extractors into identity
@@ -320,12 +564,6 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         # https://github.com/DLR-RM/stable-baselines3/blob/201fbffa8c40a628ecb2b30fd0973f3b171e6c4c/stable_baselines3/common/policies.py#L557
         # in case self.mlp_extractor.latent_dim_vf == 1
         self.value_net = nn.Identity()
-
-    # xxx(okachaiev): feels like a hack
-    # it would be much nicers if we can return distribution object from
-    # extract call without passing latent values thought the policy object
-    def _get_action_dist_from_latent(self, latent_pi: torch.Tensor, latent_sde=False) -> Distribution:
-        return self.action_dist.proba_distribution(action_logits=latent_pi)
 
     # xxx(okachaiev): would be nice if SB3 provided configuration for
     # MlpExtractor class. in this case I wouldn't need to reload
@@ -364,6 +602,8 @@ if __name__ == "__main__":
         policy_kwargs=dict(
             ortho_init=False,
             features_extractor_class=NoopFeaturesExtractor,
+            action_dist_class=HierachicalMultiCategoricalDistribution,
+            action_dist_kwargs=dict(num_cells=256),
         ),
         learning_rate=args.learning_rate,
         gamma=args.gamma,
