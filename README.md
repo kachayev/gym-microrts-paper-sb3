@@ -89,6 +89,7 @@ A trained agent is automatically saved to `agents/` folder (or any other folder 
 $ python enjoy.py \
   --agent-file agents/ppo_gridnet_diverse_encode_decode_sb3__1__1640241051.zip \
   --max-steps 1_000
+  --bot-envs randomBiasedAI=1
 ```
 
 

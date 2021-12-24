@@ -11,13 +11,16 @@ from stable_baselines3.common.vec_env import VecVideoRecorder
 
 from gym_microrts import microrts_ai
 
-from ppo_gridnet_diverse_encode_decode_sb3 import CustomMicroRTSGridMode
+from ppo_gridnet_diverse_encode_decode_sb3 import CustomMicroRTSGridMode, ParseBotEnvs, _parse_bot_envs
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--agent-file", type=str, required=True)
 parser.add_argument("--num-episodes", type=int, default=1)
 parser.add_argument('--max-steps', type=int, default=2_000,
                     help='max number of steps per game environment')
+parser.add_argument('--bot-envs', nargs='*', action=ParseBotEnvs,
+                    default=_parse_bot_envs('randomBiasedAI=2 lightRushAI=2 workerRushAI=2 coacAI=18'),
+                    help='bot envs to setup following "bot_name=<num envs>" format')
 parser.add_argument('--capture-video', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
                     help='weather to capture videos of the agent performances (check out `videos` folder)')
 
@@ -36,8 +39,7 @@ env = CustomMicroRTSGridMode(
     num_selfplay_envs=0,
     max_steps=args.max_steps,
     render_theme=2,
-    # ai2s=args.bot_envs,
-    ai2s=[microrts_ai.coacAI for _ in range(24)],
+    ai2s=args.bot_envs,
     map_paths=["maps/16x16/basesWorkers16x16.xml"],
     reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
 )
@@ -55,7 +57,6 @@ for i in range(1,args.num_episodes+1):
         obs, reward, done, info = env.step(action)
         if done.all(): break
     print("Final reward:", reward)
-    print("Perf:", env.get_perf())
     obs = env.reset()
 
 
