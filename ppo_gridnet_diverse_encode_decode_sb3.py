@@ -420,7 +420,7 @@ if __name__ == "__main__":
         n_epochs=args.n_epochs,
         seed=args.seed,
         device='auto',
-        tensorboard_log=f"runs/test",
+        tensorboard_log=f"runs",
     )
     model.learn(total_timesteps=args.total_timesteps, callback=MicroRTSStatsCallback())
     model.save(f"{args.exp_folder}/{args.experiment_name}")
