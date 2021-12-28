@@ -13,7 +13,8 @@ from stable_baselines3.common.distributions import Distribution
 from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import get_device
-from stable_baselines3.common.vec_env import VecMonitor
+from stable_baselines3.common.vec_env import VecMonitor, VecEnvWrapper
+from stable_baselines3.common.callbacks import BaseCallback
 
 import gym
 from gym_microrts import microrts_ai
@@ -146,6 +147,28 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
         # xxx(okachaiev): it would be nice if we could pass seed value into
         # the game env itself. just ignoring for now
         pass
+
+
+class MicroRTSStatsRecorder(VecEnvWrapper):
+    def reset(self):
+        obs = self.venv.reset()
+        self.raw_rewards = [[] for _ in range(self.num_envs)]
+        return obs
+
+    def step_wait(self):
+        obs, rews, dones, infos = self.venv.step_wait()
+        for i in range(len(dones)):
+            self.raw_rewards[i] += [infos[i]["raw_rewards"]]
+        newinfos = list(infos[:])
+        for i in range(len(dones)):
+            if dones[i]:
+                info = infos[i].copy()
+                raw_rewards = np.array(self.raw_rewards[i]).sum(0)
+                raw_names = [str(rf) for rf in self.rfs]
+                info["microrts_stats"] = dict(zip(raw_names, raw_rewards))
+                self.raw_rewards[i] = []
+                newinfos[i] = info
+        return obs, rews, dones, newinfos
 
 
 class Transpose(nn.Module):
@@ -342,6 +365,24 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         return obs['obs'].float(), obs['masks'].bool()
 
 
+
+class MicroRTSStatsCallback(BaseCallback):
+    """
+    Edit _on_step for plotting in tensorboard every 10000 steps.
+    """
+    def __init__(self, verbose=0):
+        super(MicroRTSStatsCallback, self).__init__(verbose)
+    def _on_step(self) -> bool:
+        infos = self.locals["infos"]
+        for info in infos:
+            if "episode" in info.keys():
+                self.logger.record("charts/episodic_return", info["episode"]["r"])
+                for key in info["microrts_stats"]:
+                    self.logger.record(f"charts/episodic_return/{key}", info["microrts_stats"][key])
+                self.logger.dump(self.num_timesteps)
+                break
+
+
 if __name__ == "__main__":
     register_policy('MicroRTSGridActorCritic', MicroRTSGridActorCritic)
 
@@ -355,7 +396,8 @@ if __name__ == "__main__":
         map_paths=["maps/16x16/basesWorkers16x16.xml"],
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
     )
-    envs = VecMonitor(envs, info_keywords=("microrts_stats",))
+    envs = MicroRTSStatsRecorder(envs)
+    envs = VecMonitor(envs)
 
     model = PPO(
         'MicroRTSGridActorCritic',
@@ -378,6 +420,7 @@ if __name__ == "__main__":
         n_epochs=args.n_epochs,
         seed=args.seed,
         device='auto',
+        tensorboard_log=f"runs",
     )
-    model.learn(total_timesteps=args.total_timesteps)
+    model.learn(total_timesteps=args.total_timesteps, callback=MicroRTSStatsCallback())
     model.save(f"{args.exp_folder}/{args.experiment_name}")
