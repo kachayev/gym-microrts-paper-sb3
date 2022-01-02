@@ -53,18 +53,20 @@ print("Env is succesfully loaded")
 obs = env.reset()
 for i in range(1,args.num_episodes+1):
     done = np.zeros(len(args.bot_envs))
+    total_reward = np.zeros(len(args.bot_envs))
     total_raw_reward = np.zeros(6)
     progress = tqdm(range(args.max_steps+1), desc=f"Episode #{i} reward={0.0:0.5f} value={0.0:0.5f}")
     for _ in progress:
         action, _ = model.predict(obs, deterministic=False)
         obs, reward, done, info = env.step(action)
+        total_reward += reward
         total_raw_reward += np.array([e['raw_rewards'] for e in info]).sum(axis=0)
         with torch.no_grad():
             critic = model.policy.mlp_extractor.forward_critic((torch.tensor(obs['obs']).float(),None)).mean()
         progress.set_description(
-            f"Episode #{i} reward={reward.mean():0.5f} value={critic:0.5f} achievements={total_raw_reward}")
+            f"Episode #{i} reward={total_reward.mean():0.5f} value={critic:0.5f} achievements={total_raw_reward}")
         if done.all(): break
-    print("Final reward:", reward)
+    print("Total reward:", total_reward)
     obs = env.reset()
 
 
