@@ -3,3 +3,4 @@ venv/
 __pycache__
 agents/
 videos/
+.DS_Store
