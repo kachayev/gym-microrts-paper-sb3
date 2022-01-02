@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import time
+import torch
 from tqdm import tqdm
 
 from stable_baselines3 import PPO
@@ -51,18 +52,29 @@ print("Env is succesfully loaded")
 
 obs = env.reset()
 for i in range(1,args.num_episodes+1):
-    done = np.zeros(24)
-    for _ in tqdm(range(args.max_steps+1), desc=f"Episode #{i}"):
+    done = np.zeros(len(args.bot_envs))
+    total_raw_reward = np.zeros(6)
+    progress = tqdm(range(args.max_steps+1), desc=f"Episode #{i} reward={0.0:0.5f} value={0.0:0.5f}")
+    for _ in progress:
         action, _ = model.predict(obs, deterministic=False)
         obs, reward, done, info = env.step(action)
+        total_raw_reward += np.array([e['raw_rewards'] for e in info]).sum(axis=0)
+        with torch.no_grad():
+            critic = model.policy.mlp_extractor.forward_critic((torch.tensor(obs['obs']).float(),None)).mean()
+        progress.set_description(
+            f"Episode #{i} reward={reward.mean():0.5f} value={critic:0.5f} achievements={total_raw_reward}")
         if done.all(): break
     print("Final reward:", reward)
     obs = env.reset()
 
 
 print("Finishing up...")
+
 # xxx(okachaiev): hack
 # technically, we should call `env.close` here
 # but there's something not exactly right about
 # shutting down JVM on Mac
+if args.capture_video:
+    env.close_video_recorder()
+
 os._exit(os.EX_OK)
