@@ -150,6 +150,7 @@ class CustomMicroRTSGridMode(MicroRTSGridModeVecEnv):
 
 
 class MicroRTSStatsRecorder(VecEnvWrapper):
+
     def reset(self):
         obs = self.venv.reset()
         self.raw_rewards = [[] for _ in range(self.num_envs)]
@@ -179,6 +180,7 @@ class Transpose(nn.Module):
     def forward(self, x):
         return x.permute(self.permutation)
 
+
 # xxx(okachaiev): using modules for functional non-gradient
 # transformations seems like not a torch-like pattern
 class Reshape(nn.Module):
@@ -194,6 +196,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
+
 
 class NoopFeaturesExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space, features_dim: int = 0):
@@ -365,23 +368,21 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         return obs['obs'].float(), obs['masks'].bool()
 
 
-
 class MicroRTSStatsCallback(BaseCallback):
     """
     Edit _on_step for plotting in tensorboard every 10000 steps.
     """
     def __init__(self, verbose=0):
         super(MicroRTSStatsCallback, self).__init__(verbose)
-    def _on_step(self) -> bool:
-        infos = self.locals["infos"]
-        for info in infos:
-            if "episode" in info.keys():
-                self.logger.record("charts/episodic_return", info["episode"]["r"])
-                for key in info["microrts_stats"]:
-                    self.logger.record(f"charts/episodic_return/{key}", info["microrts_stats"][key])
-                self.logger.dump(self.num_timesteps)
-                break
 
+    def _on_step(self) -> bool:
+        for info in self.locals["infos"]:
+            if "episode" in info:
+                self.logger.record("charts/episodic_return", info["episode"]["r"])
+                for key, value in info["microrts_stats"].items():
+                    self.logger.record(f"charts/episodic_return/{key}", value)
+                self.logger.dump(self.num_timesteps)
+                return
 
 if __name__ == "__main__":
     register_policy('MicroRTSGridActorCritic', MicroRTSGridActorCritic)
