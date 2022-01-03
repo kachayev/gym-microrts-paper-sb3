@@ -199,18 +199,6 @@ class Reshape(nn.Module):
         return x.reshape(self.shape)
 
 
-class Unsqueeze(nn.Module):
-
-    def __init__(self, dims):
-        super().__init__()
-        self.dims = (dims,) if isinstance(dims, int) else dims
-
-    def forward(self, x):
-        for d in self.dims:
-            x = x.unsqueeze(d)
-        return x
-
-
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
@@ -324,7 +312,7 @@ class MicroRTSExtractorSmooth(MicroRTSExtractor):
         ).to(self.device)
 
         self.policy_net = nn.Sequential(
-            Unsqueeze((2,3)),
+            Reshape((-1, 256, 1, 1)),
             layer_init(nn.ConvTranspose2d(256, 128, 3, stride=2, padding=1, output_padding=1)),
             nn.ReLU(),
             layer_init(nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1)),
