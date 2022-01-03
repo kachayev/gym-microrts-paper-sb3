@@ -99,6 +99,15 @@ $ tensorboard --logdir runs/
 $ open http://localhost:6006
 ```
 
+To profile code use `cProfile`:
+
+```shell
+$ python -m cProfile -s cumulative enjoy.py \
+  --agent-file agents/ppo_gridnet_diverse_encode_decode_sb3__1__1640241051.zip \
+  --max-steps 4_000
+  --bot-envs workerRushAI=1
+```
+
 As soon as correctness of the implementation is verified, I will provide details on how to use RL Baselines3 Zoo for training and evaluations.
 
 ## Implementational Caveats
