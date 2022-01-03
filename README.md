@@ -92,6 +92,12 @@ $ python enjoy.py \
   --bot-envs randomBiasedAI=1
 ```
 
+Training progress is automatically logged to TensorBoard. Watch the progress locally:
+
+```shell
+$ tensorboard --logdir runs/
+$ open http://localhost:6006
+```
 
 As soon as correctness of the implementation is verified, I will provide details on how to use RL Baselines3 Zoo for training and evaluations.
 
