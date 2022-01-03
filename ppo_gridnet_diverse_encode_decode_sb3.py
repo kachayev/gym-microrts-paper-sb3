@@ -45,6 +45,8 @@ def parse_arguments():
                         help='folder to store experiments')
     parser.add_argument('--exp-name', type=str, default=os.path.basename(__file__).rstrip(".py"),
                         help='the name of this experiment')
+    parser.add_argument('--tensorboard-folder', type=str, default="runs",
+                        help='logger folder')
     parser.add_argument('--seed', type=int, default=1,
                         help='seed of the experiment')
     parser.add_argument('--capture-video', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
@@ -381,7 +383,6 @@ class MicroRTSStatsCallback(BaseCallback):
                 self.logger.record("charts/episodic_return", info["episode"]["r"])
                 for key, value in info["microrts_stats"].items():
                     self.logger.record(f"charts/episodic_return/{key}", value)
-                self.logger.dump(self.num_timesteps)
                 return
 
 if __name__ == "__main__":
@@ -421,7 +422,7 @@ if __name__ == "__main__":
         n_epochs=args.n_epochs,
         seed=args.seed,
         device='auto',
-        tensorboard_log=f"runs",
+        tensorboard_log=args.tensorboard_folder,
     )
     model.learn(total_timesteps=args.total_timesteps, callback=MicroRTSStatsCallback())
     model.save(f"{args.exp_folder}/{args.experiment_name}")
