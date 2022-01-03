@@ -2,6 +2,7 @@ import argparse
 from distutils.util import strtobool
 import numpy as np
 import os
+import sys
 import time
 import torch
 from torch import nn
@@ -58,6 +59,8 @@ def parse_arguments():
                         help='bot envs to setup following "bot_name=<num envs>" format')
     parser.add_argument('--num-selfplay-envs', type=int, default=0,
                         help='the number of self play envs; 16 self play envs means 8 games')
+    parser.add_argument('--policy-extractor-class', type=lambda k: getattr(sys.modules[__name__], k), default='MicroRTSExtractor',
+                        help='MLP extractor implementation')
 
     # hyperparams
     parser.add_argument('--total-timesteps', type=int, default=100_000_000,
@@ -175,6 +178,7 @@ class MicroRTSStatsRecorder(VecEnvWrapper):
 
 
 class Transpose(nn.Module):
+
     def __init__(self, permutation):
         super().__init__()
         self.permutation = permutation
@@ -186,12 +190,25 @@ class Transpose(nn.Module):
 # xxx(okachaiev): using modules for functional non-gradient
 # transformations seems like not a torch-like pattern
 class Reshape(nn.Module):
+
     def __init__(self, shape):
         super().__init__()
         self.shape = shape
     
     def forward(self, x):
         return x.reshape(self.shape)
+
+
+class Unsqueeze(nn.Module):
+
+    def __init__(self, dims):
+        super().__init__()
+        self.dims = (dims,) if isinstance(dims, int) else dims
+
+    def forward(self, x):
+        for d in self.dims:
+            x = x.unsqueeze(d)
+        return x
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -213,7 +230,7 @@ class NoopFeaturesExtractor(BaseFeaturesExtractor):
 class MicroRTSExtractor(nn.Module):
 
     def __init__(self, input_channels=27, output_channels=78, action_space_size=None, device = "auto"):
-        super().__init__()
+        super(MicroRTSExtractor, self).__init__()
 
         # xxx(okachaiev): requires reading the documentation
         # to know about these properties. maybe ABC class
@@ -224,7 +241,7 @@ class MicroRTSExtractor(nn.Module):
     
         self.device = get_device(device)
 
-        self.shared_net = nn.Sequential(
+        self.latent_net = nn.Sequential(
             Transpose((0, 3, 1, 2)),
             layer_init(nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)),
             nn.MaxPool2d(3, stride=2, padding=1),
@@ -268,16 +285,58 @@ class MicroRTSExtractor(nn.Module):
 
     def forward(self, features):
         obs, masks = features
-        shared_latent = self.shared_net(obs)
+        shared_latent = self.latent_net(obs)
         return self._mask_action_logits(self.policy_net(shared_latent), masks), self.value_net(shared_latent)
 
     def forward_actor(self, features):
         obs, masks = features
-        return self._mask_action_logits(self.policy_net(self.shared_net(obs)), masks)
+        return self._mask_action_logits(self.policy_net(self.latent_net(obs)), masks)
 
     def forward_critic(self, features):
         obs, _ = features
-        return self.value_net(self.shared_net(obs))
+        return self.value_net(self.latent_net(obs))
+
+
+class MicroRTSExtractorSmooth(MicroRTSExtractor):
+
+    def __init__(self, input_channels=27, output_channels=78, action_space_size=None, device = "auto"):
+        super(MicroRTSExtractorSmooth, self).__init__()
+
+        self.latent_dim_pi = action_space_size
+        self.latent_dim_vf = 256
+
+        self.device = get_device(device)
+
+        self.latent_net = nn.Sequential(
+            Transpose((0, 3, 1, 2)),
+            layer_init(nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)),
+            nn.MaxPool2d(3, stride=2, padding=1),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, kernel_size=3, padding=1)),
+            nn.MaxPool2d(3, stride=2, padding=1),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 128, kernel_size=3, padding=1)),
+            nn.MaxPool2d(3, stride=2, padding=1),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(128, 256, kernel_size=3, padding=1)),
+            nn.MaxPool2d(3, stride=2, padding=1),
+            nn.Flatten(),
+        ).to(self.device)
+
+        self.policy_net = nn.Sequential(
+            Unsqueeze((2,3)),
+            layer_init(nn.ConvTranspose2d(256, 128, 3, stride=2, padding=1, output_padding=1)),
+            nn.ReLU(),
+            layer_init(nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1)),
+            nn.ReLU(),
+            layer_init(nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1)),
+            nn.ReLU(),
+            layer_init(nn.ConvTranspose2d(32, output_channels, 3, stride=2, padding=1, output_padding=1)),
+            Transpose((0, 2, 3, 1)),
+            Reshape((-1, action_space_size))
+        ).to(self.device)
+
+        self.value_net = nn.Identity()
 
 
 class HierachicalMultiCategoricalDistribution(Distribution):
@@ -334,6 +393,11 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         self.height, self.width, self.input_channels = observation_space['obs'].shape
         self.num_cells = self.height * self.width
         self.action_plane = action_space.nvec[:action_space.nvec.size // self.num_cells]
+        if 'mlp_extractor_class' in kwargs:
+            self.mlp_extractor_class = kwargs['mlp_extractor_class']
+            del kwargs['mlp_extractor_class']
+        else:
+            self.mlp_extractor_class = MicroRTSExtractor
 
         super().__init__(observation_space, action_space, *args, **kwargs)
 
@@ -347,7 +411,8 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         # it seems like we can avoid doing additional network here:
         # https://github.com/DLR-RM/stable-baselines3/blob/201fbffa8c40a628ecb2b30fd0973f3b171e6c4c/stable_baselines3/common/policies.py#L557
         # in case self.mlp_extractor.latent_dim_vf == 1
-        self.value_net = nn.Identity()
+        if self.mlp_extractor.latent_dim_vf == 1:
+            self.value_net = nn.Identity()
 
     # xxx(okachaiev): feels like a hack
     # it would be much nicers if we can return distribution object from
@@ -360,7 +425,7 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
     # "internal" function of the class
     # xxx(okachaiev): also, should it be called "latent extractor"?
     def _build_mlp_extractor(self) -> None:
-        self.mlp_extractor = MicroRTSExtractor(
+        self.mlp_extractor = self.mlp_extractor_class(
             input_channels=self.input_channels,
             output_channels=self.action_plane.sum(),
             action_space_size=self.action_space.nvec.sum(),
@@ -408,6 +473,7 @@ if __name__ == "__main__":
         policy_kwargs=dict(
             ortho_init=False,
             features_extractor_class=NoopFeaturesExtractor,
+            mlp_extractor_class=args.policy_extractor_class,
         ),
         learning_rate=args.learning_rate,
         gamma=args.gamma,
