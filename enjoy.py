@@ -1,4 +1,5 @@
 import argparse
+import cProfile
 from distutils.util import strtobool
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,6 +15,17 @@ from gym_microrts import microrts_ai
 
 from ppo_gridnet_diverse_encode_decode_sb3 import CustomMicroRTSGridMode, ParseBotEnvs, _parse_bot_envs
 
+class NoopProfiler:
+
+    def enable(self):
+        pass
+
+    def disable(self):
+        pass
+
+    def print_stats(self):
+        pass
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--agent-file", type=str, required=True)
 parser.add_argument("--num-episodes", type=int, default=1)
@@ -24,6 +36,8 @@ parser.add_argument('--bot-envs', nargs='*', action=ParseBotEnvs,
                     help='bot envs to setup following "bot_name=<num envs>" format')
 parser.add_argument('--capture-video', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
                     help='weather to capture videos of the agent performances (check out `videos` folder)')
+parser.add_argument('--profiler', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
+                    help='weather to profile model inference and env steps')
 
 args = parser.parse_args()
 
@@ -50,27 +64,35 @@ if args.capture_video:
 
 print("Env is succesfully loaded")
 
+profiler = cProfile.Profile() if args.profiler else NoopProfiler()
+
 obs = env.reset()
 for i in range(1,args.num_episodes+1):
     done = np.zeros(len(args.bot_envs))
     total_reward = np.zeros(len(args.bot_envs))
     total_raw_reward = np.zeros(6)
-    progress = tqdm(range(args.max_steps+1), desc=f"Episode #{i} reward={0.0:0.5f} value={0.0:0.5f}")
+    progress = tqdm(range(args.max_steps+1), desc=f"Episode #{i} R={0.0:0.3f} V={0.0:0.4f}")
     for _ in progress:
+        profiler.enable()
+
         action, _ = model.predict(obs, deterministic=False)
         obs, reward, done, info = env.step(action)
+
+        profiler.disable()
+
         total_reward += reward
         total_raw_reward += np.array([e['raw_rewards'] for e in info]).sum(axis=0)
         with torch.no_grad():
             critic = model.policy.mlp_extractor.forward_critic((torch.tensor(obs['obs']).float(),None)).mean()
         progress.set_description(
-            f"Episode #{i} reward={total_reward.mean():0.5f} value={critic:0.5f} achievements={total_raw_reward}")
+            f"Episode #{i} R={total_reward.mean():0.3f} V={critic:0.4f} I={total_raw_reward}")
         if done.all(): break
-    print("Total reward:", total_reward)
+    print("Reward by envs:", total_reward)
     obs = env.reset()
 
-
 print("Finishing up...")
+
+profiler.print_stats()
 
 # xxx(okachaiev): hack
 # technically, we should call `env.close` here
