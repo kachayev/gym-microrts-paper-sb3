@@ -289,6 +289,8 @@ class HierachicalMultiCategoricalDistribution(Distribution):
         self.num_envs = None
         self.split_level = split_level
         self.action_dims = action_dims
+        self.action_dims_total = self.action_dims.sum()
+        self.action_dims_num = len(self.action_dims)
 
     def proba_distribution_net(self, latent_dim: int) -> nn.Module:
         return nn.Identity()
@@ -300,25 +302,31 @@ class HierachicalMultiCategoricalDistribution(Distribution):
     # recreate array of Categorical distributions of a different
     # size
     def proba_distribution(self, action_logits: torch.Tensor) -> "HierachicalMultiCategoricalDistribution":
-        action_logits = action_logits.reshape((-1,self.split_level,self.action_dims.sum()))
+        action_logits = action_logits.reshape((-1, self.split_level, self.action_dims_total))
         self.num_envs = action_logits.shape[0]
-        self.distribution = [Categorical(logits=split) for split in torch.split(action_logits, tuple(self.action_dims), dim=-1)]
+        self.distribution = [
+            Categorical(logits=split, validate_args=False)
+            for split
+            in torch.split(action_logits, tuple(self.action_dims), dim=-1)
+        ]
         return self
 
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
-        actions = actions.reshape((-1,self.split_level,len(self.action_dims)))
-        return torch.stack(
-            [dist.log_prob(action) for dist, action in zip(self.distribution, torch.unbind(actions, dim=2))], dim=2
-        ).sum(dim=-1).sum(dim=-1)
+        actions = actions.reshape((-1, self.split_level, self.action_dims_num))
+        return torch.stack([
+            dist.log_prob(action).sum(dim=-1) for dist, action in zip(self.distribution, torch.unbind(actions, dim=2))
+        ], dim=1).sum(dim=-1)
 
     def entropy(self) -> torch.Tensor:
-        return torch.stack([dist.entropy() for dist in self.distribution], dim=2).sum(dim=-1).sum(dim=-1)
+        return torch.stack([dist.entropy().sum(dim=-1) for dist in self.distribution], dim=1).sum(dim=-1)
 
     def sample(self) -> torch.Tensor:
         return torch.stack([dist.sample() for dist in self.distribution], dim=2).reshape((self.num_envs, -1))
 
     def mode(self) -> torch.Tensor:
-        return torch.stack([torch.argmax(dist.probs, dim=2) for dist in self.distribution], dim=2).respahe((self.num_envs, -1))
+        return torch.stack([
+            torch.argmax(dist.probs, dim=2) for dist in self.distribution
+        ], dim=2).respahe((self.num_envs, -1))
 
     def actions_from_params(self, action_logits: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
         self.proba_distribution(action_logits)
