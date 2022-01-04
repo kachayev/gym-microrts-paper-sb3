@@ -119,3 +119,21 @@ A few notes / pain points regarding the implementation of the alrogithms, and th
 * Invalid masking is implemented by passing masks into observations from the wrapper (the observation space is replaced with `gym.spaces.Dict` to hold both observations and masks). By doing it this way, masks are now available for policy, and fit rollout buffer layout. Masking is implemented by setting logits into `-inf` (or to a rather small number).
 
 Look for `xxx(hack)` comments in the code for more details.
+
+
+## More Experimentation
+
+Additional experimentation with implementation details (those that are not present in the original paper) are now moved to separate scripts (to avoid confusion).
+
+### Linear Critic
+
+The idea is to have the critic (value approximation) to be done as an affine transformation rather than a 2-layers NN. In addition to the change, CNN output is now L2-normalized.
+
+```shell
+$ python ppo_gridnet_linear_critic.py \
+  --total-timesteps 10_000_000 \
+  --bot-envs coacAI=24 randomBiasedAI=24 \
+  --num-selfplay-envs 0 \
+  --batch-size 2048 \
+  --n-epochs 10
+```

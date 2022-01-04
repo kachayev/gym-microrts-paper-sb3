@@ -2,7 +2,6 @@ import argparse
 from distutils.util import strtobool
 import numpy as np
 import os
-import sys
 import time
 import torch
 from torch import nn
@@ -59,8 +58,6 @@ def parse_arguments():
                         help='bot envs to setup following "bot_name=<num envs>" format')
     parser.add_argument('--num-selfplay-envs', type=int, default=0,
                         help='the number of self play envs; 16 self play envs means 8 games')
-    parser.add_argument('--policy-extractor-class', type=lambda k: getattr(sys.modules[__name__], k), default='MicroRTSExtractor',
-                        help='MLP extractor implementation')
 
     # hyperparams
     parser.add_argument('--total-timesteps', type=int, default=100_000_000,
@@ -285,48 +282,6 @@ class MicroRTSExtractor(nn.Module):
         return self.value_net(self.latent_net(obs))
 
 
-class MicroRTSExtractorSmooth(MicroRTSExtractor):
-
-    def __init__(self, input_channels=27, output_channels=78, action_space_size=None, device = "auto"):
-        super(MicroRTSExtractorSmooth, self).__init__()
-
-        self.latent_dim_pi = action_space_size
-        self.latent_dim_vf = 256
-
-        self.device = get_device(device)
-
-        self.latent_net = nn.Sequential(
-            Transpose((0, 3, 1, 2)),
-            layer_init(nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)),
-            nn.MaxPool2d(3, stride=2, padding=1),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, kernel_size=3, padding=1)),
-            nn.MaxPool2d(3, stride=2, padding=1),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 128, kernel_size=3, padding=1)),
-            nn.MaxPool2d(3, stride=2, padding=1),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(128, 256, kernel_size=3, padding=1)),
-            nn.MaxPool2d(3, stride=2, padding=1),
-            nn.Flatten(),
-        ).to(self.device)
-
-        self.policy_net = nn.Sequential(
-            Reshape((-1, 256, 1, 1)),
-            layer_init(nn.ConvTranspose2d(256, 128, 3, stride=2, padding=1, output_padding=1)),
-            nn.ReLU(),
-            layer_init(nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1)),
-            nn.ReLU(),
-            layer_init(nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1)),
-            nn.ReLU(),
-            layer_init(nn.ConvTranspose2d(32, output_channels, 3, stride=2, padding=1, output_padding=1)),
-            Transpose((0, 2, 3, 1)),
-            Reshape((-1, action_space_size))
-        ).to(self.device)
-
-        self.value_net = nn.Identity()
-
-
 class HierachicalMultiCategoricalDistribution(Distribution):
 
     def __init__(self, split_level: int, action_dims: List[int]):
@@ -381,11 +336,6 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         self.height, self.width, self.input_channels = observation_space['obs'].shape
         self.num_cells = self.height * self.width
         self.action_plane = action_space.nvec[:action_space.nvec.size // self.num_cells]
-        if 'mlp_extractor_class' in kwargs:
-            self.mlp_extractor_class = kwargs['mlp_extractor_class']
-            del kwargs['mlp_extractor_class']
-        else:
-            self.mlp_extractor_class = MicroRTSExtractor
 
         super().__init__(observation_space, action_space, *args, **kwargs)
 
@@ -413,7 +363,7 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
     # "internal" function of the class
     # xxx(okachaiev): also, should it be called "latent extractor"?
     def _build_mlp_extractor(self) -> None:
-        self.mlp_extractor = self.mlp_extractor_class(
+        self.mlp_extractor = MicroRTSExtractor(
             input_channels=self.input_channels,
             output_channels=self.action_plane.sum(),
             action_space_size=self.action_space.nvec.sum(),
@@ -438,11 +388,8 @@ class MicroRTSStatsCallback(BaseCallback):
                     self.logger.record(f"charts/episodic_return/{key}", value)
                 return
 
-if __name__ == "__main__":
-    register_policy('MicroRTSGridActorCritic', MicroRTSGridActorCritic)
 
-    args = parse_arguments()
-
+def main(args):
     envs = CustomMicroRTSGridMode(
         num_selfplay_envs=args.num_selfplay_envs,
         max_steps=args.max_steps,
@@ -461,7 +408,6 @@ if __name__ == "__main__":
         policy_kwargs=dict(
             ortho_init=False,
             features_extractor_class=NoopFeaturesExtractor,
-            mlp_extractor_class=args.policy_extractor_class,
         ),
         learning_rate=args.learning_rate,
         gamma=args.gamma,
@@ -480,3 +426,11 @@ if __name__ == "__main__":
     )
     model.learn(total_timesteps=args.total_timesteps, callback=MicroRTSStatsCallback())
     model.save(f"{args.exp_folder}/{args.experiment_name}")
+
+
+if __name__ == "__main__":
+    register_policy('MicroRTSGridActorCritic', MicroRTSGridActorCritic)
+
+    args = parse_arguments()
+
+    main(args)
