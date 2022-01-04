@@ -5,3 +5,5 @@ agents/
 videos/
 runs/
 .DS_Store
+.ipynb_checkpoints/
+*.ipynb
