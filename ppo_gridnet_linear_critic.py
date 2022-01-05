@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 
 from stable_baselines3.common.utils import get_device
@@ -14,18 +15,11 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
 )
 
 
-class MicroRTSExtractorLinearCritic(MicroRTSExtractor):
+class Encoder(nn.Module):
 
-    def __init__(self, input_channels=27, output_channels=78, action_space_size=None, device = "auto"):
-        super(MicroRTSExtractorLinearCritic, self).__init__()
-
-        self.latent_dim_pi = action_space_size
-        self.latent_dim_vf = 256
-
-        self.device = get_device(device)
-
-        self.latent_net = nn.Sequential(
-            Transpose((0, 3, 1, 2)),
+    def __init__(self, input_channels):
+        super(Encoder, self).__init__()
+        self.encoder = nn.Sequential(
             layer_init(nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)),
             nn.MaxPool2d(3, stride=2, padding=1),
             nn.ReLU(),
@@ -37,8 +31,27 @@ class MicroRTSExtractorLinearCritic(MicroRTSExtractor):
             nn.ReLU(),
             layer_init(nn.Conv2d(128, 256, kernel_size=3, padding=1)),
             nn.MaxPool2d(3, stride=2, padding=1),
-            nn.Flatten(),
-        ).to(self.device)
+        )
+
+    def forward(self, x):
+        x = x.permute((0,3,1,2))
+        x = self.encoder(x)
+        x = x.flatten(start_dim=1)
+        x = x / torch.linalg.norm(x, 2, -1, True)
+        return x
+
+
+class MicroRTSExtractorLinearCritic(MicroRTSExtractor):
+
+    def __init__(self, input_channels=27, output_channels=78, action_space_size=None, device = "auto"):
+        super(MicroRTSExtractorLinearCritic, self).__init__()
+
+        self.latent_dim_pi = action_space_size
+        self.latent_dim_vf = 256
+
+        self.device = get_device(device)
+
+        self.latent_net = Encoder(input_channels).to(self.device)
 
         self.policy_net = nn.Sequential(
             Reshape((-1, 256, 1, 1)),
