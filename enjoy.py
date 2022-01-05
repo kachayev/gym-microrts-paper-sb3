@@ -29,7 +29,7 @@ args = parser.parse_args()
 
 model = PPO.load(args.agent_file)
 
-print("Model is succesfully loaded")
+print(f"Model is succesfully loaded, device={model.device}")
 
 # xxx(okachaiev): not exactly the hack but quite
 # annoying detail. as I trained the policy using
@@ -62,7 +62,9 @@ for i in range(1,args.num_episodes+1):
         total_reward += reward
         total_raw_reward += np.array([e['raw_rewards'] for e in info]).sum(axis=0)
         with torch.no_grad():
-            critic = model.policy.mlp_extractor.forward_critic((torch.tensor(obs['obs']).float(),None)).mean()
+            critic = model.policy.mlp_extractor.forward_critic(
+                (torch.tensor(obs['obs']).float().to(model.device), None)
+            ).mean()
         progress.set_description(
             f"Episode #{i} R={total_reward.mean():0.3f} V={critic:0.4f} I={total_raw_reward}")
         if done.all(): break
