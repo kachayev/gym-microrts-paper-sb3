@@ -6,7 +6,7 @@ import time
 import torch
 from torch import nn
 from torch.distributions.categorical import Categorical
-from typing import Callable, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.distributions import Distribution
@@ -37,7 +37,7 @@ class ParseBotEnvs(argparse.Action):
 
 # default argument values are defined to be as close to the paper implementation as possible
 # https://github.com/vwxyzjn/gym-microrts-paper/blob/cf291b303c04e98be2f00acbbe6bbb2c23a8bac5/ppo_gridnet_diverse_encode_decode.py#L25
-def parse_arguments():
+def make_parser():
     parser = argparse.ArgumentParser(description='PPO agent')
 
     # environment setup
@@ -104,6 +104,9 @@ def parse_arguments():
     # also, see this discussion:
     # https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail/issues/102
 
+    return parser
+
+def parse_arguments(parser):
     args = parser.parse_args()
     if not args.seed:
         args.seed = int(time.time())
@@ -344,6 +347,11 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         self.height, self.width, self.input_channels = observation_space['obs'].shape
         self.num_cells = self.height * self.width
         self.action_plane = action_space.nvec[:action_space.nvec.size // self.num_cells]
+        if 'hparams' in kwargs:
+            self.hparams = kwargs['hparams']
+            del kwargs['hparams']
+        else:
+            self.hparams = {}
 
         super().__init__(observation_space, action_space, *args, **kwargs)
 
@@ -377,6 +385,11 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
             action_space_size=self.action_space.nvec.sum(),
         )
 
+    def _get_constructor_parameters(self):
+        params = super()._get_constructor_parameters()
+        params['hparams'] = self.hparams.copy()
+        return params
+
     def extract_features(self, obs):
         return obs['obs'].float(), obs['masks'].bool()
 
@@ -397,7 +410,7 @@ class MicroRTSStatsCallback(BaseCallback):
                 return
 
 
-def main(args):
+def main(args, policy_hparams: Optional[Dict[str, Any]] = None):
     envs = CustomMicroRTSGridMode(
         num_selfplay_envs=args.num_selfplay_envs,
         max_steps=args.max_steps,
@@ -416,6 +429,7 @@ def main(args):
         policy_kwargs=dict(
             ortho_init=False,
             features_extractor_class=NoopFeaturesExtractor,
+            hparams=policy_hparams or {},
         ),
         learning_rate=args.learning_rate,
         gamma=args.gamma,
@@ -439,6 +453,6 @@ def main(args):
 if __name__ == "__main__":
     register_policy('MicroRTSGridActorCritic', MicroRTSGridActorCritic)
 
-    args = parse_arguments()
+    args = parse_arguments(make_parser())
 
     main(args)
