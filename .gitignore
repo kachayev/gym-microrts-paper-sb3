@@ -7,3 +7,4 @@ runs/
 .DS_Store
 .ipynb_checkpoints/
 *.ipynb
+lightning_logs/
