@@ -99,4 +99,4 @@ if __name__ == "__main__":
                         help="Lp norm for CNN embeddings, setting to 0 skips normalization")
     args = parse_arguments(parser)
 
-    main(args, dict(encoder_norm=args.encoder_norm))
+    main(args, policy_hparams=dict(encoder_norm=args.encoder_norm))
