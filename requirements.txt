@@ -1,3 +1,4 @@
+cma==3.1.0
 gym-microrts==0.5.0
 pytorch-lightning==1.5.7
 pytorch-metric-learning==1.1.0
