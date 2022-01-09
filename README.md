@@ -137,3 +137,21 @@ $ python ppo_gridnet_linear_critic.py \
   --batch-size 2048 \
   --n-epochs 10
 ```
+
+### Linear Actor
+
+After a quick analysis of embeddings space produced by encoder, some observations:
+
+* enocder embeddings carry weak signal for reconstructing features of the environemnt (using linear probes)
+* embeddings alongside a single trajectory do not exibit smoothness
+
+Hypothetically this means the encoder is "collapsed" with the actor network (decisions are made mostly on the encoder side). Practically this means weaker generalization. To test out the hypothesis, `ppo_gridnet_linear_actor` implements policy network as a simple linear controller applied to all cells on the map (leveraging the fact that encoder produces 256-dimensional vector).
+
+```shell
+$ python ppo_gridnet_linear_actor.py \
+  --total-timesteps 10_000_000 \
+  --bot-envs lightRushAI=12 workerRushAI=12 \
+  --num-selfplay-envs 0 \
+  --batch-size 2048 \
+  --n-epochs 10
+```
