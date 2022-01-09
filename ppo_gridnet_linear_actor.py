@@ -18,9 +18,8 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
 
 class Encoder(nn.Module):
 
-    def __init__(self, input_channels: int, norm_type: float = 0.):
+    def __init__(self, input_channels: int):
         super(Encoder, self).__init__()
-        self.norm_type = norm_type
         self.encoder = nn.Sequential(
             layer_init(nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)),
             nn.MaxPool2d(3, stride=2, padding=1),
@@ -39,8 +38,6 @@ class Encoder(nn.Module):
         x = x.permute((0,3,1,2))
         x = self.encoder(x)
         x = x.flatten(start_dim=1)
-        if self.norm_type > 0:
-            x = x / torch.linalg.norm(x, ord=self.norm_type, dim=-1, keepdim=True).detach()
         return x
 
 
@@ -82,7 +79,7 @@ class MicroRTSExtractorLinearActor(MicroRTSExtractor):
 
         self.device = get_device(device)
 
-        self.latent_net = Encoder(input_channels, norm_type=encoder_norm_type).to(self.device)
+        self.latent_net = Encoder(input_channels).to(self.device)
         self.policy_net = Actor(output_channels, hidden_dim=actor_hidden_dim).to(self.device)
         self.value_net = nn.Identity()
 
