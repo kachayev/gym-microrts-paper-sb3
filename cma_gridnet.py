@@ -19,21 +19,11 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
 
 class CMA:
 
-    def __init__(
-            self,
-            population_size,
-            init_sigma,
-            init_params,
-            seed=42
-        ):
+    def __init__(self, population_size, init_sigma, init_params):
         self.algorithm = cma.CMAEvolutionStrategy(
             x0=init_params,
             sigma0=init_sigma,
-            inopts={
-                'popsize': population_size,
-                'seed': seed, 
-                'randn': np.random.randn,
-            },
+            inopts=dict(popsize=population_size, seed=0, randn=np.random.randn)
         )
         self.population = None
 
@@ -49,8 +39,6 @@ class CMA:
 
 
 class BaseSolution(abc.ABC):
-    """Base solution."""
-
     @abc.abstractmethod
     def get_output(self, inputs, update_filter):
         raise NotImplementedError()
@@ -88,8 +76,6 @@ class BaseSolution(abc.ABC):
         raise NotImplementedError()
 
     def get_l2_penalty(self):
-        if not hasattr(self, '_l2_coefficient'):
-            raise ValueError('l2_coefficient not specified.')
         params = self.get_params()
         return self._l2_coefficient * np.sum(params ** 2)
 
@@ -98,8 +84,6 @@ class BaseSolution(abc.ABC):
 
     def add_noise_to_layer(self, noise, layer_index):
         layer_params = self.get_params_from_layer(layer_index)
-        assert layer_params.size == noise.size, '#params={}, #noise={}'.format(
-            layer_params.size, noise.size)
         self.set_params_to_layer(
             params=layer_params + noise, layer_index=layer_index)
 
@@ -192,6 +176,7 @@ class BaseTorchSolution(BaseSolution):
     def layers(self):
         return self._layers
 
+
 class GymTask:
 
     def __init__(self):
@@ -229,7 +214,7 @@ class GymTask:
     def _overwrite_terminate_flag(self, reward, done, step_cnt, evaluate):
         return done
 
-    def roll_out(self, solution, evaluate):
+    def rollout(self, solution, evaluate):
         ob = self.reset()
         ob = self._process_observation(ob)
         if hasattr(solution, 'reset'):
@@ -239,15 +224,14 @@ class GymTask:
 
         rewards = []
         done = False
-        step_cnt = 0
+        step_idx = 0
         while not done:
             action = solution.get_output(inputs=ob, update_filter=not evaluate)
             action = self._process_action(action)
             ob, r, done, _ = self.step(action, evaluate)
             ob = self._process_observation(ob)
-
-            step_cnt += 1
-            done = self._overwrite_terminate_flag(r, done, step_cnt, evaluate)
+            step_idx += 1
+            done = self._overwrite_terminate_flag(r, done, step_idx, evaluate)
             step_reward = self._process_reward(r, done, evaluate)
             rewards.append(step_reward)
 
@@ -255,166 +239,9 @@ class GymTask:
         actual_reward = np.sum(rewards)
         
         print('Roll-out time={0:.2f}s, steps={1}, reward={2:.2f}'.format(
-            time_cost, step_cnt, actual_reward))
+            time_cost, step_idx, actual_reward))
 
         return actual_reward
-
-class CMAMaster:
-
-    def __init__(self,
-                 logger,
-                 log_dir,
-                 workers,
-                 bucket_name,
-                 experiment_name,
-                 credential_json,
-                 seed,
-                 n_repeat,
-                 max_iter,
-                 eval_every_n_iter,
-                 n_eval_roll_outs):
-        self._logger = logger
-        self._log_dir = log_dir
-        self._n_repeat = n_repeat
-        self._max_iter = max_iter
-        self._eval_every_n_iter = eval_every_n_iter
-        self._n_eval_roll_outs = n_eval_roll_outs
-        self._solution = misc.utility.create_solution()
-        self._rnd = np.random.RandomState(seed=seed)
-        self._algorithm = CMA(
-            logger=logger, seed=seed, init_params=self._solution.get_params())
-
-    def train(self):
-        # Evaluate before train.
-        eval_scores = self._evaluate()
-        misc.utility.log_scores(
-            logger=self._logger, iter_cnt=0, scores=eval_scores, evaluate=True)
-        misc.utility.save_scores(
-            log_dir=self._log_dir, n_iter=0, scores=eval_scores)
-        best_eval_score = -float('Inf')
-
-        self._logger.info(
-            'Start training for {} iterations.'.format(self._max_iter))
-        for iter_cnt in range(self._max_iter):
-            # Training.
-            start_time = time.time()
-            scores = self._train_once()
-            time_cost = time.time() - start_time
-            self._logger.info('1-step training time: {}s'.format(time_cost))
-            misc.utility.log_scores(
-                logger=self._logger, iter_cnt=iter_cnt + 1, scores=scores)
-
-            # Evaluate periodically.
-            if (iter_cnt + 1) % self._eval_every_n_iter == 0:
-                # Evaluate.
-                start_time = time.time()
-                eval_scores = self._evaluate()
-                time_cost = time.time() - start_time
-                self._logger.info('Evaluation time: {}s'.format(time_cost))
-
-                # Record results and save the model.
-                mean_score = eval_scores.mean()
-                if mean_score > best_eval_score:
-                    best_eval_score = mean_score
-                    best_so_far = True
-                else:
-                    best_so_far = False
-                misc.utility.log_scores(logger=self._logger,
-                                        iter_cnt=iter_cnt + 1,
-                                        scores=eval_scores,
-                                        evaluate=True)
-                misc.utility.save_scores(log_dir=self._log_dir,
-                                         n_iter=iter_cnt + 1,
-                                         scores=eval_scores)
-                self._save_solution(iter_count=iter_cnt + 1,
-                                    best_so_far=best_so_far)
-
-    def _create_rpc_requests(self, evaluate):
-        """Create gRPC requests."""
-
-        if evaluate:
-            n_repeat = 1
-            num_roll_outs = self._n_eval_roll_outs
-            params_list = [self._algorithm.get_current_parameters()]
-        else:
-            n_repeat = self._n_repeat
-            params_list = self._algorithm.get_population()
-            num_roll_outs = len(params_list) * n_repeat
-
-        env_seed_list = self._rnd.randint(
-            low=0, high=MAX_INT, size=num_roll_outs)
-
-        requests = []
-        for i, env_seed in enumerate(env_seed_list):
-            ix = 0 if evaluate else i // n_repeat
-            requests.append(self._communication_helper.create_cma_request(
-                roll_out_index=i,
-                env_seed=env_seed,
-                parameters=params_list[ix],
-                evaluate=evaluate,
-            ))
-        return requests
-
-    def _evaluate(self):
-        requests = self._create_rpc_requests(evaluate=True)
-        fitness = self._communication_helper.collect_fitness_from_workers(
-            requests=requests,
-        )
-        return fitness
-
-    def _train_once(self):
-        requests = self._create_rpc_requests(evaluate=False)
-
-        fitness = self._communication_helper.collect_fitness_from_workers(
-            requests=requests,
-        )
-        fitness = fitness.reshape([-1, self._n_repeat]).mean(axis=1)
-        self._algorithm.evolve(fitness)
-
-        return fitness
-
-    def _save_solution(self, iter_count, best_so_far):
-        self._update_solution()
-        self._solution.save(self._log_dir, iter_count, best_so_far)
-
-    def _update_solution(self):
-        self._solution.set_params(self._algorithm.get_current_parameters())
-
-
-class CMAWorker:
-
-    def __init__(self, logger):
-        self._logger = logger
-        self._task = misc.utility.create_task(logger=logger)
-        self._solution = misc.utility.create_solution()
-        self._communication_helper = misc.communication.CommunicationHelper(
-            logger=logger)
-
-    def _handle_master_request(self, request):
-        params = np.asarray(request.cma_parameters.parameters)
-        self._solution.set_params(params)
-        self._task.seed(request.env_seed)
-        score = self._task.roll_out(self._solution, request.evaluate)
-        penalty = 0 if request.evaluate else self._solution.get_l2_penalty()
-        return score - penalty
-
-    def performRollOut(self, request, context):
-        fitness = self._handle_master_request(request)
-        return self._communication_helper.report_fitness(
-            roll_out_index=request.roll_out_index,
-            fitness=fitness,
-        )
-
-
-
-# 
-# todos:
-# 1) "agent" with torch layers that can go from obs to action
-# 2) connect this to get_params/set_params for layers
-# 3) roll out env, get sum of rewards (to use as fitness)
-# 4) "worker" to create instance of env & "agent" (solution), handle new params
-# 5) CMA to handle population and cycle of calles to workers
-
 
 # xxx(okachaiev): make it work with vector envs to take advantage of GPU
 # xxx(okachaiev): technically, we don't need Gym API here at all... if
@@ -446,47 +273,50 @@ class MicroRTSTask(GymTask):
 
 class Encoder(nn.Module):
 
-    def __init__(self, input_channels):
-        super().__init__()
-        self.network = nn.Sequential(
-            nn.Conv2d(input_channels, 32, kernel_size=3, padding=1),
+    def __init__(self, input_channels: int):
+        super(Encoder, self).__init__()
+
+        self.input_channels = input_channels
+        self.encoder = nn.Sequential(
+            nn.Conv2d(self.input_channels, 32, kernel_size=3, padding=1),
             nn.MaxPool2d(3, stride=2, padding=1),
-            # nn.ReLU(),
-            # nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            # nn.MaxPool2d(3, stride=2, padding=1),
-            # nn.ReLU(),
-            # nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            # nn.MaxPool2d(3, stride=2, padding=1),
-            # nn.ReLU(),
-            # nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            # nn.MaxPool2d(3, stride=2, padding=1)
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.MaxPool2d(3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.MaxPool2d(3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.MaxPool2d(3, stride=2, padding=1),
         )
 
     def forward(self, x):
         x = x.permute((0,3,1,2))
-        x = self.network(x)
+        x = self.encoder(x)
+        x = x.flatten(start_dim=1)
         return x
+
 
 class Policy(nn.Module):
     
-    def __init__(self, output_channels, action_space_size):
-        super().__init__()
-        self.action_space_size = action_space_size
+    def __init__(self, output_channels, hidden_dim=32, num_cells=256):
+        super(Policy, self).__init__()
+
+        self.output_channels = output_channels
+        self.hidden_dim = hidden_dim
+        self.num_cells = num_cells
         self.network = nn.Sequential(
-            # nn.ConvTranspose2d(256, 128, 3, stride=2, padding=1, output_padding=1),
-            # nn.ReLU(),
-            # nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1),
-            # nn.ReLU(),
-            # nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1),
-            # nn.ReLU(),
-            nn.ConvTranspose2d(32, output_channels, 3, stride=2, padding=1, output_padding=1),
+            nn.Linear(1, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.output_channels)
         )
-    
+
     def forward(self, x):
-        x = self.network(x)
-        x = x.permute((0,2,3,1))
-        x = x.reshape((-1, self.action_space_size))
+        x = self.network(x.unsqueeze(-1))
+        x = x.reshape((-1, self.output_channels*self.num_cells))
         return x
+
 
 # xxx(okachaiev): I don't like the fact we need to manipulate with
 # "_layers". seems like having "register_layer" as a public API would
@@ -506,7 +336,7 @@ class GridnetSolution(BaseTorchSolution):
 
         self.latent_net = Encoder(self.input_channels).to(self.device)
         self.register_layers(self.latent_net)
-        self.policy_net = Policy(self.action_plane.sum(), self.action_space_size).to(self.device)
+        self.policy_net = Policy(self.action_plane.sum()).to(self.device)
         self.register_layers(self.policy_net)
 
         self._mask_value = torch.tensor(-1e+8, device=self.device)
@@ -537,43 +367,87 @@ class GridnetSolution(BaseTorchSolution):
         pass
 
 
+class CompressedParams:
+
+    def __init__(self, init_seed):
+        self.init_seed = init_seed
+        self.rng = np.random.RandomState(seed=init_seed)
+        self.generations = []
+
+    def evolve(self, sigma):
+        self.generations.append((self.rng.randint(1 << 31 - 1), sigma))
+        return self
+
+    def uncompress(self, params):
+        N = len(params)
+        for seed, sigma in self.generations:
+            params += np.random.RandomState(seed).normal(0., sigma, N)
+        return params
+
+# xxx(okachaiev): ABC class to describe algorithm?
+class GaussianNoiseGA:
+
+    def __init__(self, population_size, init_seed, truncate=None, sigma=0.05):
+        self.rng = np.random.RandomState(seed=init_seed)
+        self.sigma = sigma
+        self.truncate = truncate or population_size // 2
+        self.population_size = population_size
+        self.population = [
+            CompressedParams(self.rng.randint(1 << 31 - 1))
+            for _ in range(population_size)
+        ]
+
+    def get_population(self):
+        return self.population
+
+    def evolve(self, fitness):
+        # choice best models to clone
+        top_k = np.argpartition(fitness,-self.truncate)[-self.truncate:]
+        ind = np.random.choice(top_k, self.population_size-1)
+        elite = [self._evolve_single(np.argmax(fitness))] 
+        self.population = elite + [self._evolve_single(i) for i in ind]
+        return self
+
+    def _evolve_single(self, ind: int) -> CompressedParams:
+        new_params = CompressedParams(self.population[ind].init_seed)
+        new_params.generations = self.population[ind].generations[:]
+        new_params.evolve(self.sigma)
+        return new_params
+
+    def get_current_parameters(self):
+        pass
+
+
 if __name__ == "__main__":
     # xxx(okachaiev): this API is horrible :(
     task = MicroRTSTask().create_task()
     solution = GridnetSolution(task._env.observation_space, task._env.action_space)
     rng = np.random.RandomState(seed=0)
 
-    task.roll_out(solution, evaluate=False)
+    task.rollout(solution, evaluate=False)
 
-    algo = CMA(population_size=4, init_sigma=0.1, init_params=solution.get_params())
+    algo = GaussianNoiseGA(population_size=24, truncate=16, init_seed=42)
 
-    def collect_fitness_from_workers(algorithm, num_roll_outs: int = 2, n_repeat: int = 2, evaluate: bool = False):
-        if evaluate:
-            n_repeat = 1
-            params_list = [algorithm.get_current_parameters()]
-        else:
-            params_list = algorithm.get_population()
-            num_roll_outs = len(params_list) * n_repeat
-
-        env_seed_list = rng.randint(
-            low=0, high=MAX_INT, size=num_roll_outs)
-
-        fitness_scores = np.zeros(num_roll_outs)
-        for roll_out_ind in range(num_roll_outs):
-            # xxx(okachaiev): cycle
-            ix = 0 if evaluate else iroll_out_ind // n_repeat
-            fitness = run_worker(params=params_list[ix], evaluate=evaluate)
-            fitness_scores[roll_out_ind] = fitness
+    def collect_fitness(algorithm, n_repeat: int = 2, evaluate: bool = False):
+        population = algorithm.get_population()
+        fitness_scores = np.zeros((len(population), n_repeat))
+        for idx, compressed_params in enumerate(population):
+            solution = GridnetSolution(task._env.observation_space, task._env.action_space)
+            # xxx(okachaiev): there should be much more performant way of doing this
+            params = compressed_params.uncompress(solution.get_params())
+            solution.set_params(params)
+            # xxx(okachaiev): instead of seq. execution I can rely on vec env
+            for n_iter in range(n_repeat):
+                fitness_scores[idx][n_iter] = task.rollout(solution, evaluate=evaluate)
         return fitness_scores
 
     def train_once(algorithm, n_repeat: int = 5):
-        fitness = collect_fitness_from_workers(algorithm, evaluate=False)
-        fitness = fitness.reshape([-1, n_repeat]).mean(axis=1)
+        fitness = collect_fitness(algorithm, n_repeat, evaluate=False).mean(axis=1)
         algorithm.evolve(fitness)
         return fitness
 
     def evaluate(algorithm):
-        return collect_fitness_from_workers(algorithm, evaluate=True)
+        return collect_fitness(algorithm, evaluate=True)
 
     def train(algorithm, max_iter: int = 5, eval_every_n_iter: int = 10):
         # Evaluate before train.
@@ -582,24 +456,20 @@ if __name__ == "__main__":
 
         best_eval_score = -float('Inf')
 
-        for iter_cnt in range(max_iter):
-            # Training.
+        for iter_idx in range(max_iter):
             start_time = time.time()
             scores = train_once(algorithm)
             time_cost = time.time() - start_time
             
-            print(f"1-step training time: {time_cost}s, iter: {iter_cnt+1}, scores: {scores}")
+            print(f"training time: {time_cost}s, iter: {iter_idx+1}, scores: {scores}")
             
-            # Evaluate periodically.
-            if (iter_cnt + 1) % eval_every_n_iter == 0:
-                # Evaluate.
+            if (iter_idx + 1) % eval_every_n_iter == 0:
                 start_time = time.time()
                 eval_scores = evaluate(algorithm)
                 time_cost = time.time() - start_time
                 
-                print(f"Evaluation time: {time_cost}s")
+                print(f"evaluation time: {time_cost}s")
 
-                # Record results and save the model.
                 mean_score = eval_scores.mean()
                 if mean_score > best_eval_score:
                     best_eval_score = mean_score
@@ -607,13 +477,13 @@ if __name__ == "__main__":
                 else:
                     best_so_far = False
 
-                print(f"iter: {iter_cnt + 1}, scores: {eval_scores}")
+                print(f"iter: {iter_idx + 1}, scores: {eval_scores}")
 
-    def run_worker(params: np.ndarray, env_seed: int = 0, evaluate: bool = False):
+    def run_worker(solution, params: np.ndarray, env_seed: int = 0, evaluate: bool = False):
         solution.set_params(params)
-        task.seed(env_seed)
-        score = task.roll_out(solution, evaluate)
+        # task.seed(env_seed)
+        score = task.rollout(solution, evaluate)
         penalty = 0 if evaluate else solution.get_l2_penalty()
         return score - penalty
 
-    ## train(algo)
+    train(algo, max_iter=10)
