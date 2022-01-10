@@ -431,18 +431,25 @@ class GaussianNoiseGA:
         return self.population
 
     def evolve(self, fitness):
-        # choice best models to clone
+        print(f"fitness best: {np.max(fitness)}, avg: {np.mean(fitness)}")
+
         top_k = np.argpartition(fitness,-self.truncate)[-self.truncate:]
-        ind = np.random.choice(top_k, self.population_size-1)
-        elite = [self._evolve_single(np.argmax(fitness))] 
-        self.population = elite + [self._evolve_single(i) for i in ind]
+        # xxx(okachaiev): i should also cache their fitness
+        # so I don't need to re-run again :thinking:
+        elite = [self.population[k] for k in top_k]
+
+        print(f"top_k: {top_k}, fitness: {fitness[top_k]}")
+
+        ind = np.random.choice(top_k, self.population_size-self.truncate)
+        evolution = [self._evolve_single(i) for i in ind]
+        self.population = elite + evolution
         return self
 
     def _evolve_single(self, ind: int) -> CompressedParams:
-        new_params = CompressedParams(self.population[ind].init_seed)
-        new_params.generations = self.population[ind].generations[:]
-        new_params.evolve(self.sigma)
-        return new_params
+        params = CompressedParams(self.population[ind].init_seed)
+        params.generations = self.population[ind].generations[:]
+        params.evolve(self.sigma)
+        return params
 
     def get_current_parameters(self):
         pass
@@ -486,7 +493,7 @@ if __name__ == "__main__":
     # task.rollout(solution, evaluate=False)
 
     num_workers = 8
-    algo = GaussianNoiseGA(population_size=1024, truncate=12, init_seed=42, sigma=0.01)
+    algo = GaussianNoiseGA(population_size=2048, truncate=8, init_seed=42, sigma=0.01)
 
     def collect_fitness(pool, algorithm, n_repeat: int = 2, evaluate: bool = False):
         population = algorithm.get_population()
@@ -505,7 +512,6 @@ if __name__ == "__main__":
         return collect_fitness(pool, algorithm, evaluate=True)
 
     def train(pool, algorithm, max_iter: int = 5, eval_every_n_iter: int = 5):
-        # Evaluate before train.
         eval_scores = evaluate(pool, algorithm)
         print(f"iter: {0}, scores: {eval_scores}")
 
@@ -539,4 +545,4 @@ if __name__ == "__main__":
             initargs=(actor,),
             processes=num_workers,
     ) as pool:
-        train(pool, algo, max_iter=10, eval_every_n_iter=5)
+        train(pool, algo, max_iter=16, eval_every_n_iter=4)
