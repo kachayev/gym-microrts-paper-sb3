@@ -1,4 +1,5 @@
 import abc
+import multiprocessing as mp
 import numpy as np
 import time
 import torch
@@ -13,8 +14,9 @@ from gym_microrts import microrts_ai
 
 from ppo_gridnet_diverse_encode_decode_sb3 import (
     CustomMicroRTSGridMode,
-    MicroRTSStatsRecorder,
     HierachicalMultiCategoricalDistribution,
+    MicroRTSStatsRecorder,
+    layer_init,
 )
 
 class CMA:
@@ -93,7 +95,7 @@ class BaseTorchSolution(BaseSolution):
         self._layers = []
 
     def get_output(self, inputs, update_filter=False):
-        torch.set_num_threads(1)
+        # torch.set_num_threads(1)
         with torch.no_grad():
             return self._get_output(inputs, update_filter)
 
@@ -278,16 +280,16 @@ class Encoder(nn.Module):
 
         self.input_channels = input_channels
         self.encoder = nn.Sequential(
-            nn.Conv2d(self.input_channels, 32, kernel_size=3, padding=1),
+            layer_init(nn.Conv2d(self.input_channels, 32, kernel_size=3, padding=1)),
             nn.MaxPool2d(3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            layer_init(nn.Conv2d(32, 64, kernel_size=3, padding=1)),
             nn.MaxPool2d(3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            layer_init(nn.Conv2d(64, 128, kernel_size=3, padding=1)),
             nn.MaxPool2d(3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            layer_init(nn.Conv2d(128, 256, kernel_size=3, padding=1)),
             nn.MaxPool2d(3, stride=2, padding=1),
         )
 
@@ -298,18 +300,43 @@ class Encoder(nn.Module):
         return x
 
 
-class Policy(nn.Module):
+class CNNActor(nn.Module):
+
+    def __init__(self, output_channels, num_cells=256):
+        super(CNNActor, self).__init__()
+
+        self.output_channels = output_channels
+        self.num_cells = num_cells
+        self.network = nn.Sequential(
+            layer_init(nn.ConvTranspose2d(num_cells, 128, 3, stride=2, padding=1, output_padding=1)),
+            nn.ReLU(),
+            layer_init(nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1)),
+            nn.ReLU(),
+            layer_init(nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1)),
+            nn.ReLU(),
+            layer_init(nn.ConvTranspose2d(32, output_channels, 3, stride=2, padding=1, output_padding=1)),
+        )
+    
+    def forward(self, x):
+        x = x.unsqueeze(-1)
+        x = x.reshape((1, self.num_cells, 1, 1))
+        x = self.network(x)
+        x = x.permute((0, 2, 3, 1))
+        x = x.reshape((-1, self.output_channels*self.num_cells))
+        return x
+
+class LinearActor(nn.Module):
     
     def __init__(self, output_channels, hidden_dim=32, num_cells=256):
-        super(Policy, self).__init__()
+        super(LinearActor, self).__init__()
 
         self.output_channels = output_channels
         self.hidden_dim = hidden_dim
         self.num_cells = num_cells
         self.network = nn.Sequential(
-            nn.Linear(1, self.hidden_dim),
+            layer_init(nn.Linear(1, self.hidden_dim)),
             nn.ReLU(),
-            nn.Linear(self.hidden_dim, self.output_channels)
+            layer_init(nn.Linear(self.hidden_dim, self.output_channels))
         )
 
     def forward(self, x):
@@ -323,7 +350,7 @@ class Policy(nn.Module):
 # be much easier to deal with
 class GridnetSolution(BaseTorchSolution):
 
-    def __init__(self, observation_space, action_space, device: str = "auto"):
+    def __init__(self, observation_space, action_space, actor="linear", device: str = "auto"):
         super().__init__()
 
         self.device = get_device(device)
@@ -336,14 +363,17 @@ class GridnetSolution(BaseTorchSolution):
 
         self.latent_net = Encoder(self.input_channels).to(self.device)
         self.register_layers(self.latent_net)
-        self.policy_net = Policy(self.action_plane.sum()).to(self.device)
+        if actor == "linear":
+            self.policy_net = LinearActor(self.action_plane.sum()).to(self.device)
+        elif actor == "cnn":
+            self.policy_net = CNNActor(self.action_plane.sum()).to(self.device)
         self.register_layers(self.policy_net)
 
         self._mask_value = torch.tensor(-1e+8, device=self.device)
 
         print('Number of parameters: {}'.format(self.get_num_params_per_layer()))
 
-    def register_layers(self, module: nn.Module):
+    def register_layers(self, module: nn.Module, std=np.sqrt(2)):
         for layer in module.children():
             if list(layer.parameters()):
                 self._layers.append(layer)
@@ -393,7 +423,7 @@ class GaussianNoiseGA:
         self.truncate = truncate or population_size // 2
         self.population_size = population_size
         self.population = [
-            CompressedParams(self.rng.randint(1 << 31 - 1))
+            CompressedParams(self.rng.randint(1 << 31 - 1)).evolve(self.sigma)
             for _ in range(population_size)
         ]
 
@@ -417,55 +447,80 @@ class GaussianNoiseGA:
     def get_current_parameters(self):
         pass
 
+solution = None
+task = None
+
+def worker_init(actor="cnn"):
+    global solution, task
+
+    task = MicroRTSTask().create_task()
+    solution = GridnetSolution(task._env.observation_space, task._env.action_space, actor=actor)
+
+def worker_run(req):
+    global solution, task
+
+    compressed_params, n_repeat, evaluate = req
+    current_params = solution.get_params()
+    std_prev = current_params.std()
+    new_params = compressed_params.uncompress(current_params)
+    std_new = new_params.std()
+    solution.set_params(new_params)
+
+    print(f"generations {len(compressed_params.generations)}, std prev: {std_prev}, std new: {std_new}")
+
+    fitness_scores = np.zeros(n_repeat)
+    for n_iter in range(n_repeat):
+        fitness_scores[n_iter] = task.rollout(solution, evaluate=evaluate)
+
+    return fitness_scores
+
 
 if __name__ == "__main__":
+    actor = "cnn"
+
     # xxx(okachaiev): this API is horrible :(
-    task = MicroRTSTask().create_task()
-    solution = GridnetSolution(task._env.observation_space, task._env.action_space)
-    rng = np.random.RandomState(seed=0)
+    # task = MicroRTSTask().create_task()
+    # solution = GridnetSolution(task._env.observation_space, task._env.action_space, actor=actor)
+    # rng = np.random.RandomState(seed=0)
 
-    task.rollout(solution, evaluate=False)
+    # task.rollout(solution, evaluate=False)
 
-    algo = GaussianNoiseGA(population_size=24, truncate=16, init_seed=42)
+    num_workers = 8
+    algo = GaussianNoiseGA(population_size=1024, truncate=12, init_seed=42, sigma=0.01)
 
-    def collect_fitness(algorithm, n_repeat: int = 2, evaluate: bool = False):
+    def collect_fitness(pool, algorithm, n_repeat: int = 2, evaluate: bool = False):
         population = algorithm.get_population()
-        fitness_scores = np.zeros((len(population), n_repeat))
-        for idx, compressed_params in enumerate(population):
-            solution = GridnetSolution(task._env.observation_space, task._env.action_space)
-            # xxx(okachaiev): there should be much more performant way of doing this
-            params = compressed_params.uncompress(solution.get_params())
-            solution.set_params(params)
-            # xxx(okachaiev): instead of seq. execution I can rely on vec env
-            for n_iter in range(n_repeat):
-                fitness_scores[idx][n_iter] = task.rollout(solution, evaluate=evaluate)
-        return fitness_scores
+        fitness_scores = pool.map(
+            func=worker_run,
+            iterable=((params, n_repeat, evaluate) for params in population)
+        )
+        return np.array(fitness_scores)
 
-    def train_once(algorithm, n_repeat: int = 5):
-        fitness = collect_fitness(algorithm, n_repeat, evaluate=False).mean(axis=1)
+    def train_once(pool, algorithm, n_repeat: int = 2):
+        fitness = collect_fitness(pool, algorithm, n_repeat, evaluate=False).mean(axis=1)
         algorithm.evolve(fitness)
         return fitness
 
-    def evaluate(algorithm):
-        return collect_fitness(algorithm, evaluate=True)
+    def evaluate(pool, algorithm):
+        return collect_fitness(pool, algorithm, evaluate=True)
 
-    def train(algorithm, max_iter: int = 5, eval_every_n_iter: int = 10):
+    def train(pool, algorithm, max_iter: int = 5, eval_every_n_iter: int = 5):
         # Evaluate before train.
-        eval_scores = evaluate(algorithm)
+        eval_scores = evaluate(pool, algorithm)
         print(f"iter: {0}, scores: {eval_scores}")
 
         best_eval_score = -float('Inf')
 
         for iter_idx in range(max_iter):
             start_time = time.time()
-            scores = train_once(algorithm)
+            scores = train_once(pool, algorithm)
             time_cost = time.time() - start_time
             
             print(f"training time: {time_cost}s, iter: {iter_idx+1}, scores: {scores}")
             
             if (iter_idx + 1) % eval_every_n_iter == 0:
                 start_time = time.time()
-                eval_scores = evaluate(algorithm)
+                eval_scores = evaluate(pool, algorithm)
                 time_cost = time.time() - start_time
                 
                 print(f"evaluation time: {time_cost}s")
@@ -479,11 +534,9 @@ if __name__ == "__main__":
 
                 print(f"iter: {iter_idx + 1}, scores: {eval_scores}")
 
-    def run_worker(solution, params: np.ndarray, env_seed: int = 0, evaluate: bool = False):
-        solution.set_params(params)
-        # task.seed(env_seed)
-        score = task.rollout(solution, evaluate)
-        penalty = 0 if evaluate else solution.get_l2_penalty()
-        return score - penalty
-
-    train(algo, max_iter=10)
+    with mp.get_context('spawn').Pool(
+            initializer=worker_init,
+            initargs=(actor,),
+            processes=num_workers,
+    ) as pool:
+        train(pool, algo, max_iter=10, eval_every_n_iter=5)
