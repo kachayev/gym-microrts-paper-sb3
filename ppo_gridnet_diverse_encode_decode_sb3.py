@@ -14,7 +14,7 @@ from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecMonitor, VecEnvWrapper
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
 import gym
 from gym_microrts import microrts_ai
@@ -62,6 +62,8 @@ def make_parser():
     # hyperparams
     parser.add_argument('--total-timesteps', type=int, default=100_000_000,
                         help='total timesteps of the experiments')
+    parser.add_argument('--save-freq', type=int, default=0,
+                        help='how often the module should be save (by default the model is saved only at the end of the training')
     parser.add_argument('--torch-deterministic', type=lambda x: bool(strtobool(x)), default=True, nargs='?', const=True,
                         help='if toggled, `torch.backends.cudnn.deterministic=False`')
     parser.add_argument('--learning-rate', type=float, default=2.5e-4,
@@ -394,12 +396,28 @@ class MicroRTSGridActorCritic(ActorCriticPolicy):
         return obs['obs'].float(), obs['masks'].bool()
 
 
+class PolicyModuleDisplay(BaseCallback):
+
+    @staticmethod
+    def display_module(module: nn.Module):
+        total_params = 0
+        print("Policy module:")
+        for name, params in module.named_parameters():
+            print(f"\tname={name}, params={params.numel()}, shape={params.size()}")
+            total_params += params.numel()
+        print(f"Total number of parameters: {total_params}")
+
+    def _on_step(self) -> bool:
+        pass
+
+    def _on_training_start(self):
+        self.display_module(self.model.policy)
+
+
 class MicroRTSStatsCallback(BaseCallback):
     """
     Edit _on_step for plotting in tensorboard every 10000 steps.
     """
-    def __init__(self, verbose=0):
-        super(MicroRTSStatsCallback, self).__init__(verbose)
 
     def _on_step(self) -> bool:
         for info in self.locals["infos"]:
@@ -421,6 +439,17 @@ def main(args, policy_hparams: Optional[Dict[str, Any]] = None):
     )
     envs = MicroRTSStatsRecorder(envs)
     envs = VecMonitor(envs)
+
+    save_path = f"{args.exp_folder}/{args.experiment_name}"
+
+    callbacks = [MicroRTSStatsCallback(), PolicyModuleDisplay()]
+    if args.save_freq > 0:
+        callbacks.append(CheckpointCallback(
+            args.save_freq,
+            save_path,
+            name_prefix=args.experiment_name,
+            verbose=1
+        ))
 
     model = PPO(
         'MicroRTSGridActorCritic',
@@ -446,8 +475,8 @@ def main(args, policy_hparams: Optional[Dict[str, Any]] = None):
         device='auto',
         tensorboard_log=args.tensorboard_folder,
     )
-    model.learn(total_timesteps=args.total_timesteps, callback=MicroRTSStatsCallback())
-    model.save(f"{args.exp_folder}/{args.experiment_name}")
+    model.learn(total_timesteps=args.total_timesteps, callback=CallbackList(callbacks))
+    model.save(save_path)
 
 
 if __name__ == "__main__":
