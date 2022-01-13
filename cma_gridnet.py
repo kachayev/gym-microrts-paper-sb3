@@ -1,4 +1,5 @@
 import abc
+from collections import OrderedDict
 import multiprocessing as mp
 import numpy as np
 import time
@@ -307,7 +308,7 @@ class CNNActor(nn.Module):
 
         self.output_channels = output_channels
         self.num_cells = num_cells
-        self.network = nn.Sequential(
+        self.actor = nn.Sequential(
             layer_init(nn.ConvTranspose2d(num_cells, 128, 3, stride=2, padding=1, output_padding=1)),
             nn.ReLU(),
             layer_init(nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1)),
@@ -320,7 +321,7 @@ class CNNActor(nn.Module):
     def forward(self, x):
         x = x.unsqueeze(-1)
         x = x.reshape((1, self.num_cells, 1, 1))
-        x = self.network(x)
+        x = self.actor(x)
         x = x.permute((0, 2, 3, 1))
         x = x.reshape((-1, self.output_channels*self.num_cells))
         return x
@@ -372,6 +373,44 @@ class GridnetSolution(BaseTorchSolution):
         self._mask_value = torch.tensor(-1e+8, device=self.device)
 
         print('Number of parameters: {}'.format(self.get_num_params_per_layer()))
+
+    def rename_layers(self, weights, layers_mapping):
+        return OrderedDict([
+            (layers_mapping[name], tensor)
+            for name, tensor in weights.items()
+            if name in layers_mapping
+        ])
+
+    # xxx(okachaiev): I believe there's should be an easier way of doing this...
+    # most likely named modules is a way to go thought I'm not sure what to
+    # do about indecies being messed up. maybe that's the reason why layers
+    # like Reshape are considered to be a bad practice in torch community
+    def load_from_pretrained(self, path: str):
+        weights = torch.load(path, map_location=self.device)
+
+        encoder_layers = {
+            "encoder._encoder.1.weight": "encoder.0.weight",
+            "encoder._encoder.1.bias": "encoder.0.bias",
+            "encoder._encoder.4.weight": "encoder.3.weight",
+            "encoder._encoder.4.bias": "encoder.3.bias",
+            "encoder._encoder.7.weight": "encoder.6.weight",
+            "encoder._encoder.7.bias": "encoder.6.bias",
+            "encoder._encoder.10.weight": "encoder.9.weight",
+            "encoder._encoder.10.bias": "encoder.9.bias",
+        }
+        self.latent_net.load_state_dict(self.rename_layers(weights, encoder_layers))
+
+        actor_layers = {
+            "actor.deconv.0.weight": "actor.0.weight",
+            "actor.deconv.0.bias": "actor.0.bias",
+            "actor.deconv.2.weight": "actor.2.weight",
+            "actor.deconv.2.bias": "actor.2.bias",
+            "actor.deconv.4.weight": "actor.4.weight",
+            "actor.deconv.4.bias": "actor.4.bias",
+            "actor.deconv.6.weight": "actor.6.weight",
+            "actor.deconv.6.bias": "actor.6.bias",
+        }
+        self.policy_net.load_state_dict(self.rename_layers(weights, actor_layers))
 
     def register_layers(self, module: nn.Module, std=np.sqrt(2)):
         for layer in module.children():
@@ -462,6 +501,7 @@ def worker_init(actor="cnn"):
 
     task = MicroRTSTask().create_task()
     solution = GridnetSolution(task._env.observation_space, task._env.action_space, actor=actor)
+    solution.load_from_pretrained("../gym-microrts-paper/trained_models/ppo_gridnet_selfplay_diverse_encode_decode/agent-4.pt")
 
 def worker_run(req):
     global solution, task
@@ -492,8 +532,8 @@ if __name__ == "__main__":
 
     # task.rollout(solution, evaluate=False)
 
-    num_workers = 8
-    algo = GaussianNoiseGA(population_size=2048, truncate=8, init_seed=42, sigma=0.01)
+    num_workers = 10
+    algo = GaussianNoiseGA(population_size=1024, truncate=20, init_seed=1048, sigma=0.002)
 
     def collect_fitness(pool, algorithm, n_repeat: int = 2, evaluate: bool = False):
         population = algorithm.get_population()
@@ -511,7 +551,7 @@ if __name__ == "__main__":
     def evaluate(pool, algorithm):
         return collect_fitness(pool, algorithm, evaluate=True)
 
-    def train(pool, algorithm, max_iter: int = 5, eval_every_n_iter: int = 5):
+    def train(pool, algorithm, max_iter: int = 5, eval_every_n_iter: int = 5, n_repeat = 2):
         eval_scores = evaluate(pool, algorithm)
         print(f"iter: {0}, scores: {eval_scores}")
 
@@ -519,7 +559,7 @@ if __name__ == "__main__":
 
         for iter_idx in range(max_iter):
             start_time = time.time()
-            scores = train_once(pool, algorithm)
+            scores = train_once(pool, algorithm, n_repeat)
             time_cost = time.time() - start_time
             
             print(f"training time: {time_cost}s, iter: {iter_idx+1}, scores: {scores}")
@@ -545,4 +585,4 @@ if __name__ == "__main__":
             initargs=(actor,),
             processes=num_workers,
     ) as pool:
-        train(pool, algo, max_iter=16, eval_every_n_iter=4)
+        train(pool, algo, max_iter=16, eval_every_n_iter=4, n_repeat=8)
