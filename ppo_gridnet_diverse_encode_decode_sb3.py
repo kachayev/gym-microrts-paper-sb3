@@ -14,7 +14,7 @@ from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecMonitor, VecEnvWrapper
-from stable_baselines3.common.callbacks import BaseCallback, CallbackList
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
 
 import gym
 from gym_microrts import microrts_ai
