@@ -18,7 +18,7 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
 )
 
 
-class MultiHeadAttentionEncoder(nn.Module):
+class GlobalMultiHeadAttentionEncoder(nn.Module):
 
     def __init__(
         self,
@@ -33,7 +33,7 @@ class MultiHeadAttentionEncoder(nn.Module):
         embed_dropout: float = 0.1,
         combine_inputs: bool = True
     ):
-        super(MultiHeadAttentionEncoder, self).__init__()
+        super(GlobalMultiHeadAttentionEncoder, self).__init__()
         self.input_channels = input_channels
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -65,15 +65,14 @@ class MultiHeadAttentionEncoder(nn.Module):
         batch_size = x.size(0)
         x = x.reshape((batch_size, self.seq_len, self.input_channels))
         q, k, v = self.proj_q(x), self.proj_k(x), self.proj_v(x)
-        context, attention = self.attention_block(q, k, v)
-        context = self.context_dropout(context)
-        context = self.context_norm(context)
+        context, attention_weights = self.attention_block(q, k, v)
+        context = self.context_norm(self.context_dropout(context))
         if self.combine_inputs:
             x = self.embed_dropout(self.proj_embed(x))
             embed = self.embed_norm(x + context)
         else:
             embed = context
-        return embed, attention
+        return embed, attention_weights
 
 
 class Actor(nn.Module):
@@ -116,7 +115,7 @@ class MicroRTSExtractorSelfAttention(MicroRTSExtractor):
 
         self.device = get_device(device)
 
-        self.latent_net = MultiHeadAttentionEncoder(
+        self.latent_net = GlobalMultiHeadAttentionEncoder(
             input_channels,
             embed_dim=actor_hidden_dim,
             num_heads=attn_num_heads,
