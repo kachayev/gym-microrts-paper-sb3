@@ -1,4 +1,5 @@
 import argparse
+import cv2
 from distutils.util import strtobool
 import numpy as np
 import os
@@ -143,6 +144,14 @@ def create_agent(envs, input_channels=27, output_channels=78):
 
     return Agent()
 
+
+def render(env):
+    # img = env.render("rgb_array")
+    # cv2.imshow("RTS", img)
+    # cv2.waitKey(0)
+    pass
+
+
 if __name__ == "__main__":
     args = make_parser().parse_args()
 
@@ -160,15 +169,20 @@ if __name__ == "__main__":
     print(f"Model is succesfully loaded, device={model.device}")
 
     obs = env.reset()
+    render(env)
     progress = trange(args.total_timesteps, desc="R=? V=? I=?")
     with torch.no_grad():
         for i in progress:
             action, value = model.predict(obs, deterministic=False)
             obs, reward, done, info = env.step(action)
+            render(env)
             raw_reward = np.array([e['raw_rewards'] for e in info]).sum(axis=0)
+            # xxx(okachaiev): this description definitely need some work
             progress.set_description(f"R={reward.mean():0.4f} V={value.mean():0.4f} I={raw_reward}")
 
     print("Finishing up...")
+
+    cv2.destroyAllWindows()
 
     # xxx(okachaiev): hack
     # technically, we should call `env.close` here but there's
