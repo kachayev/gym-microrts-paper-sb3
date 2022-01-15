@@ -238,15 +238,15 @@ def worker_run(req):
 
     print(f"Roll-out index={index}, time={time_cost:.2f}s, reward={rewards.mean():.2f}")
 
-    return rewards.mean()
+    return rewards
 
 if __name__ == "__main__":
-    num_workers = 8
+    num_workers = 6
     steps_per_rollout = 2_000
     num_envs = 2
 
     init_params = np.zeros(4270)
-    algo = CMA(population_size=256, init_params=init_params, init_sigma=0.01, init_seed=1047)
+    algo = CMA(population_size=256, init_params=init_params, init_sigma=0.02, init_seed=1042)
 
     def train(pool, algorithm, max_iter=5):
         best_eval_score = -float('inf')
@@ -257,11 +257,17 @@ if __name__ == "__main__":
                 func=worker_run,
                 iterable=enumerate(population)
             )
-            fitness = np.array(fitness_scores).mean(axis=1)
+            fitness = np.array(fitness).mean(axis=1)
             algorithm.evolve(fitness)
             time_cost = time.time() - start_time
             best_eval_score = max(best_eval_score, fitness.max())
-            print(f"training time: {time_cost}s, iter: {iter_idx+1}, best: {best_eval_score}, scores: {fitness}")
+            print(f"""
+                generation: iter: {iter_idx+1},
+                training time: {time_cost:.2f}s
+                scores: {sorted(fitness)[::-1][:6]}
+                best local: {fitness.max():.2f}
+                best overall: {best_eval_score:.2f}
+            """)
 
     with mp.get_context('spawn').Pool(
         initializer=worker_init,
