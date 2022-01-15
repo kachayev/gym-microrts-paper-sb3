@@ -60,6 +60,11 @@ class TorchSolution(Solution):
     def __init__(self):
         self._layers = []
 
+    def _register_layers(self, module: nn.Module):
+        for layer in module.children():
+            if list(layer.parameters()):
+                self._layers.append(layer)
+
     def get_output(self, inputs):
         # torch.set_num_threads(1)
         with torch.no_grad():
@@ -168,6 +173,9 @@ class SelfAttentionGridnetSolution(TorchSolution):
         ).to(self.device)
         self.actor = Actor(output_channels, hidden_dim=actor_hidden_dim).to(self.device)
 
+        self._register_layers(self.encoder)
+        self._register_layers(self.actor)
+
     def _mask_action_logits(self, latent_pi, masks, mask_value=None):
         mask_value = mask_value or self._mask_value
         return torch.where(masks, latent_pi, mask_value)
@@ -225,6 +233,8 @@ def worker_init(steps_per_rollout, num_envs):
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0]),
     )
     solution = SelfAttentionGridnetSolution(task.env.observation_space, task.env.action_space)
+
+    print(f"Solution init is done, num params={len(solution.get_params())}")
 
 # xxx(okachaiev): add L2 or entropy penalty
 def worker_run(req):
