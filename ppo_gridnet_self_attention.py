@@ -52,10 +52,13 @@ class GlobalMultiHeadAttentionEncoder(nn.Module):
             self.context_norm = nn.LayerNorm(embed_dim, context_norm_eps)
         else:
             self.context_norm = nn.Identity()
-        self.proj_embed = nn.Linear(input_channels, embed_dim)
+        if self.combine_inputs:
+            self.proj_embed = nn.Linear(input_channels, embed_dim)
+        else:
+            self.proj_embed = nn.Identity()
         self.embed_dropout = nn.Dropout(embed_dropout)
         if embed_norm_eps > 0.:
-            self.embed_norm = nn.LayerNorm(embed_dim, embed_norm_eps)
+            self.esmbed_norm = nn.LayerNorm(embed_dim, embed_norm_eps)
         else:
             self.embed_norm = nn.Identity()
 
