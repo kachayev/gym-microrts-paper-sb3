@@ -8,3 +8,4 @@ runs/
 .ipynb_checkpoints/
 *.ipynb
 lightning_logs/
+offline_rl/

@@ -12,6 +12,7 @@ from tqdm import trange
 from stable_baselines3 import PPO
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecMonitor, VecVideoRecorder
+from stable_baselines3.common.vec_env.base_vec_env import VecEnvWrapper
 
 from gym_microrts import microrts_ai
 
@@ -22,6 +23,37 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
     ParseBotEnvs,
     _parse_bot_envs
 )
+
+class OfflineDatasetRecorder(VecEnvWrapper):
+
+    def __init__(self, venv, folder):
+        # xxx(okachaiev): create folder if necessary
+        self.folder = folder
+        self.obs_fd = open(f"{folder}/obs.npy", "wb+")
+        self.actions_fd = open(f"{folder}/actions.npy", "wb+")
+        self.prev_obs = None
+        super(OfflineDatasetRecorder, self).__init__(venv)
+
+    def reset(self):
+        obs = self.venv.reset()
+        self.prev_obs = obs
+        return obs
+
+    def step_async(self, actions):
+        np.save(self.obs_fd, self.prev_obs)
+        np.save(self.actions_fd, actions)
+        self.venv.step_async(actions)
+
+    def step_wait(self):
+        obs, rewards, dones, infos = self.venv.step_wait()
+        self.prev_obs = obs
+        return obs, rewards, dones, infos
+
+    def close(self):
+        self.obs_fd.close()
+        self.self.actions_fd()
+        self.venv.close()
+
 
 def make_parser():
     parser = argparse.ArgumentParser()
@@ -34,6 +66,8 @@ def make_parser():
                         help='bot envs to setup following "bot_name=<num envs>" format')
     parser.add_argument('--capture-video', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
                         help='weather to capture videos of the agent performances (check out `videos` folder)')
+    parser.add_argument('--capture-offline-dataset', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
+                        help='weather to capture trajectories into offline dataset (check out `offline_rl` folder)')
     return parser
 
 
@@ -50,6 +84,9 @@ def create_env(args):
 
     if args.capture_video:
         env = VecVideoRecorder(env, "videos/", lambda _: True, video_length=args.max_steps)
+
+    if args.capture_offline_dataset:
+        env = OfflineDatasetRecorder(env, "offline_rl/2/")
 
     return env
 
