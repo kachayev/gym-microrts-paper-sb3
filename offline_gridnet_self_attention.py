@@ -1,8 +1,11 @@
 from argparse import ArgumentParser
 import numpy as np
+from pathlib import Path
+from typing import Union
+
 import torch
 from torch import nn
-from torch.distribution.categorical import Categorical
+from torch.distributions.categorical import Categorical
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.optim import Adam
 from pytorch_lightning import LightningModule, Trainer
@@ -30,28 +33,41 @@ class OfflineSelfAttention(LightningModule):
         loss = -log_probs + entropy
         # xxx(okachaiev): try out focal loss (as we doing objects detection, basically)
         return loss.sum(dim=-1)
-    
+
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=self.hparams.lr)
 
 
-def load_dataset(folder: Path) -> Dataset:
-    obs, actions = [], []
-    with (
-        folder.joinpath("obs.npy").open("rb") as obs_fd,
-        folder.joinpath("actions.npy").open("rb") as action_fd
-    ):
-        while True:
-            try:
-                obs.append(np.load(obs_fd))
-                actions.append(np.load(actions_fd))
-            except Exception as e:
-                print(e)
-                break
+class OfflineTrajDataset(Dataset):
 
-    obs = np.concatenate(obs, axis=0)
-    actions = np.concatenate(actions, axis=0)
-    return TensorDataset(obs, actions)
+    def __init__(self, obs, mask, action):
+        self.obs = torch.from_numpy(obs)
+        print(self.obs.shape)
+        self.mask = torch.from_numpy(mask)
+        self.action = torch.from_numpy(action)
+
+    def __getitem__(self, ind):
+        return (self.obs[ind], self.mask[ind], self.action[ind])
+
+    def __len__(self):
+        return self.obs.size(0)
+
+
+def load_dataset(folder: Union[str, Path], max_items:int=0) -> Dataset:
+    if isinstance(folder, str):
+        folder = Path(folder)
+
+    obs, mask, action = [], [], []
+    num_loaded = 0
+    for filepath in folder.glob("*.npz"):
+        if not max_items or num_loaded < max_items:
+            dataset = np.load(filepath)
+            obs.extend(dataset['obs'])
+            mask.extend(dataset['mask'])
+            action.extend(dataset['action'])
+            num_loaded += len(dataset['obs'])
+
+    return OfflineTrajDataset(np.stack(obs), np.stack(mask), np.stack(action))
 
 
 if __name__ == "__main__":
@@ -62,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=Path, default="offline_rl/1642325330/")
     args = parser.parse_args()
 
-    train_dataset = load_dataset(parser.dataset)
+    train_dataset = load_dataset(args.dataset)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size)
 
     print(f"Loaded dataset, n_rows={len(train_dataset)}")

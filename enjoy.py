@@ -30,37 +30,52 @@ class OfflineDatasetRecorder(VecEnvWrapper):
         now = int(time.time())
         self.folder = Path(folder, str(now))
         self.folder.mkdir(parents=True, exist_ok=True)
+        self.iteration = 0
+        self.obs_buffer = []
+        self.mask_buffer = []
+        self.action_buffer = []
 
         if verbose > 0:
             print(f"Saving offline dataset to {self.folder}")
 
-        self.obs_fd = self.folder.joinpath("obs.npy").open("wb+")
-        self.actions_fd = self.folder.joinpath("actions.npy").open("wb+")
-        self.prev_obs = None
         super(OfflineDatasetRecorder, self).__init__(venv)
 
     def reset(self):
+        self.save_dataset()
         obs = self.venv.reset()
-        self.prev_obs = obs
+        self.obs_buffer.append(obs['obs'])
+        self.mask_buffer.append(obs['masks'])
         return obs
 
     def step_async(self, actions):
-        if self.prev_obs:
-            np.save(self.obs_fd, self.prev_obs)
-            np.save(self.actions_fd, actions)
+        self.action_buffer.append(actions)
         self.venv.step_async(actions)
 
     def step_wait(self):
         obs, rewards, dones, infos = self.venv.step_wait()
-        self.prev_obs = obs
+        self.obs_buffer.append(obs['obs'])
+        self.mask_buffer.append(obs['masks'])
         return obs, rewards, dones, infos
 
-    def close_files(self):
-        self.obs_fd.close()
-        self.actions_fd.close()
+    # xxx(okachaiev): move this to callbacks
+    # or consider using "imitation" package
+    def save_dataset(self):
+        if self.obs_buffer:
+            min_len = min(len(self.obs_buffer), len(self.action_buffer))
+            with self.folder.joinpath(f"{self.iteration}.npz").open("wb") as fd:
+                np.savez_compressed(
+                    fd,
+                    obs=np.concatenate(self.obs_buffer[:min_len], axis=0),
+                    mask=np.concatenate(self.mask_buffer[:min_len], axis=0),
+                    action=np.concatenate(self.action_buffer[:min_len], axis=0)
+                )
+        self.iteration += 1
+        self.obs_buffer = []
+        self.mask_buffer = []
+        self.action_buffer = []
 
     def close(self):
-        self.close_files()
+        self.save_dataset()
         self.venv.close()
 
 
@@ -235,4 +250,4 @@ if __name__ == "__main__":
         env.close_video_recorder()
 
     if args.capture_offline_dataset:
-        env.close_files()
+        env.save_dataset()
