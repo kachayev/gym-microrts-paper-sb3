@@ -27,10 +27,11 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
 class OfflineDatasetRecorder(VecEnvWrapper):
 
     def __init__(self, venv, folder):
-        # xxx(okachaiev): create folder if necessary
-        self.folder = folder
-        self.obs_fd = open(f"{folder}/obs.npy", "wb+")
-        self.actions_fd = open(f"{folder}/actions.npy", "wb+")
+        now = int(time.time())
+        self.folder = Path(folder, now)
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.obs_fd = self.folder.joinpath("obs.npy").open("wb+")
+        self.actions_fd = self.folder.joinpath("actions.npy").open("wb+")
         self.prev_obs = None
         super(OfflineDatasetRecorder, self).__init__(venv)
 
@@ -86,7 +87,7 @@ def create_env(args):
         env = VecVideoRecorder(env, "videos/", lambda _: True, video_length=args.max_steps)
 
     if args.capture_offline_dataset:
-        env = OfflineDatasetRecorder(env, "offline_rl/2/")
+        env = OfflineDatasetRecorder(env, "offline_rl")
 
     return env
 
