@@ -37,6 +37,11 @@ class OfflineSelfAttention(LightningModule):
     # cell: [B, C]
     # patch: [B, P_s, C]
     def forward(self, cell, patch):
+        # xxx(okachaiev): this is definitely wrong usage of the attention
+        # block. what should be done:
+        # - all cells in the patch generates K and V
+        # - central cell generates Q
+        # - attention applied to a single Q (repeated to match shape?)
         context, attn_weights = self.self_attention(patch)
         context = context.reshape((-1, self.hparams.embed_dim*7*7))
         action = self.actor(torch.cat([cell, context], dim=-1))
