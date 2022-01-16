@@ -26,10 +26,14 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
 
 class OfflineDatasetRecorder(VecEnvWrapper):
 
-    def __init__(self, venv, folder):
+    def __init__(self, venv, folder:str, verbose:int=1):
         now = int(time.time())
-        self.folder = Path(folder, now)
+        self.folder = Path(folder, str(now))
         self.folder.mkdir(parents=True, exist_ok=True)
+
+        if verbose > 0:
+            print(f"Saving offline dataset to {self.folder}")
+
         self.obs_fd = self.folder.joinpath("obs.npy").open("wb+")
         self.actions_fd = self.folder.joinpath("actions.npy").open("wb+")
         self.prev_obs = None
@@ -41,8 +45,9 @@ class OfflineDatasetRecorder(VecEnvWrapper):
         return obs
 
     def step_async(self, actions):
-        np.save(self.obs_fd, self.prev_obs)
-        np.save(self.actions_fd, actions)
+        if self.prev_obs:
+            np.save(self.obs_fd, self.prev_obs)
+            np.save(self.actions_fd, actions)
         self.venv.step_async(actions)
 
     def step_wait(self):
@@ -50,9 +55,12 @@ class OfflineDatasetRecorder(VecEnvWrapper):
         self.prev_obs = obs
         return obs, rewards, dones, infos
 
-    def close(self):
+    def close_files(self):
         self.obs_fd.close()
-        self.self.actions_fd()
+        self.actions_fd.close()
+
+    def close(self):
+        self.close_files()
         self.venv.close()
 
 
@@ -220,10 +228,11 @@ if __name__ == "__main__":
 
     print("Finishing up...")
 
-    cv2.destroyAllWindows()
-
     # xxx(okachaiev): hack
     # technically, we should call `env.close` here but there's
     # something not exactly right about shutting down JVM on Mac
     if args.capture_video:
         env.close_video_recorder()
+
+    if args.capture_offline_dataset:
+        env.close_files()
