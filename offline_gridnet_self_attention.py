@@ -1,12 +1,13 @@
 from argparse import ArgumentParser
 import numpy as np
 from pathlib import Path
-from typing import Union
+from typing import Optional, Tuple, Union
 
 import torch
 from torch import nn
 from torch.distributions.categorical import Categorical
-from torch.utils.data import DataLoader, Dataset, TensorDataset
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
 from torch.optim import Adam
 from pytorch_lightning import LightningModule, Trainer
 
@@ -38,7 +39,7 @@ class OfflineSelfAttention(LightningModule):
         return Adam(self.parameters(), lr=self.hparams.lr)
 
 
-class OfflineTrajDataset(Dataset):
+class OfflineTrajectoryDataset(Dataset):
 
     def __init__(self, obs, mask, action):
         self.obs = torch.from_numpy(obs)
@@ -67,7 +68,46 @@ def load_dataset(folder: Union[str, Path], max_items:int=0) -> Dataset:
             action.extend(dataset['action'])
             num_loaded += len(dataset['obs'])
 
-    return OfflineTrajDataset(np.stack(obs), np.stack(mask), np.stack(action))
+    return OfflineTrajectoryDataset(np.stack(obs), np.stack(mask), np.stack(action))
+
+
+def patch_kernel(H: int, W: int, eps: float = 1e-6) -> torch.Tensor:
+    """Creates a binary kernel to extract the patches"""
+    window = H*W
+    kernel = torch.zeros(window, window) + torch.eye(window) + eps
+    return kernel.view(window, 1, H, W)
+
+def to_patches(
+        x: torch.Tensor,
+        patch: Union[torch.Tensor, Tuple[int, int]],
+        stride: Optional[Union[int, Tuple[int, int]]] = 1,
+        padding: Optional[Union[int, Tuple[int, int]]] = 0
+    ) -> torch.Tensor:
+    """Input shape:
+      * x is (B, C, H, W)
+      * kernel is (h*w, 1, h, w)
+
+    Output shape: (B, num_patches, C, h, w)
+
+    Example usage:
+
+        >>> x = torch.arange(25.).view(1, 1, 5, 5)
+        >>> x.shape
+        torch.Size([1, 1, 5, 5])
+        >>> patches = to_patches(x, (3,3), padding=(1,1))
+        >>> patches.shape
+        torch.Size([1, 25, 1, 3, 3])
+    """
+    B, C, H, W = x.shape
+
+    if isinstance(patch, tuple):
+        h, w = patch
+        patch = patch_kernel(h, w)
+    else:
+        h, w = patch.size(-2), patch.size(-1)
+    kernel = patch.repeat(C, 1, 1, 1).to(x.device).to(x.dtype)
+    y = F.conv2d(x, kernel, stride=stride, padding=padding, groups=C)
+    return y.view(B, C, h, w, -1).permute(0, 4, 1, 2, 3)
 
 
 if __name__ == "__main__":
