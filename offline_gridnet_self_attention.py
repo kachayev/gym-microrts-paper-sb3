@@ -12,7 +12,7 @@ from torch.optim import Adam
 from pytorch_lightning import LightningModule, Trainer
 
 
-class OfflineSelfAttention(LightningModule):
+class OfflinePatchAwareAttention(LightningModule):
 
     @staticmethod
     def add_model_specific_args(parent_parser):
@@ -42,11 +42,13 @@ class OfflineSelfAttention(LightningModule):
             batch_first=True
         )
         self.context_dropout = nn.Dropout(context_dropout)
-        if context_norm_eps > 0.:
-            self.context_norm = nn.LayerNorm(embed_dim, context_norm_eps)
-        else:
-            self.context_norm = nn.Identity()
-        self.actor = nn.Linear(input_channels + embed_dim, output_channels)
+        self.context_norm = nn.LayerNorm(embed_dim, context_norm_eps)
+        self.actor = nn.Sequential(
+            nn.Linear(input_channels + embed_dim, embed_dim),
+            nn.ReLU(),
+            nn.Dropout(0.5), # unstable actor here to regularize encoder
+            nn.Linear(embed_dim, output_channels),
+        )
         if ortho_init > 0.:
             self._ortho_init(ortho_init)
 
@@ -77,10 +79,13 @@ class OfflineSelfAttention(LightningModule):
         # xxx(okachaiev): I guess I need to put mask on the central cell
         # of the patch, so it cannot be used as a part of attention
         context, attn_W = self.patch_attention(q, k, v)
-        context = self.context_norm(self.context_dropout(context))
+        context = self.context_dropout(context)
+        if self.hparams.context_norm_eps > 0.:
+            context = self.context_norm(context)
         context = context.squeeze(1)
         # xxx(okachaiev): concat here requires additional LayerNorm
         logits = self.actor(torch.cat([cell, context], dim=-1))
+        # xxx(okachaiev): log visuals for attention weights (tensorboard supports images)
         return logits, attn_W
 
     # xxx(okachaiev): if I want to add RNN for global context,
@@ -90,8 +95,10 @@ class OfflineSelfAttention(LightningModule):
         y_logits, _ = self.forward(x_cell, x_patch)
         # easier with NLLLoss but I want to regularize entropy
         dists = [Categorical(logits=ls) for ls in torch.split(y_logits, self.action_dims, dim=-1)]
-        log_probs = torch.stack([dist.log_prob(y_action[:, ind]) for ind, dist in enumerate(dists)])
-        entropy = torch.stack([dist.entropy() for dist in dists])
+        # as of now, just removing the last component
+        # i should either introduce weights, or train separate networks
+        log_probs = torch.stack([dist.log_prob(y_action[:, ind]) for ind, dist in enumerate(dists[:-1])])
+        entropy = torch.stack([dist.entropy() for dist in dists[:-1]])
 
         self.log("train/log_prob", log_probs.detach().mean())
         self.log("train/entropy", entropy.detach().mean())
@@ -106,7 +113,8 @@ class OfflineSelfAttention(LightningModule):
         return Adam(self.parameters(), lr=self.hparams.lr)
 
 
-# xxx(okachaiev): filter out empty cells, they don't matter
+# xxx(okachaiev): option to save/load tensors to avoid waiting for compute each time
+# xxx(okachaiev): definitely should apply masks, no need to learn masked actions
 class OfflineTrajectoryPatchDataset(Dataset):
 
     EMPTY_CELL_IND = 13
@@ -195,13 +203,13 @@ def to_patches(
 
 
 # good dataset to practice on:
-# offline_rl/1642390171 with 7* 1_000 steps
+# offline_rl/1642390171 with 7* 1_000 steps (114_509 state/action pairs)
 # offline_rl/1642390276 with 7*50_000 steps
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser = Trainer.add_argparse_args(parser)
-    parser = OfflineSelfAttention.add_model_specific_args(parser)
+    parser = OfflinePatchAwareAttention.add_model_specific_args(parser)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--dataset", type=Path, default="offline_rl/1642325330/")
     args = parser.parse_args()
@@ -211,6 +219,6 @@ if __name__ == "__main__":
 
     print(f"Loaded dataset, n_rows={len(train_dataset)}")
 
-    model = OfflineSelfAttention()
+    model = OfflinePatchAwareAttention(lr=1e-3, context_norm_eps=0., embed_dim=128)
     trainer = Trainer.from_argparse_args(args)
     trainer.fit(model, train_loader)
