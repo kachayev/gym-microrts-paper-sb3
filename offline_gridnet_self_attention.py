@@ -11,8 +11,6 @@ from torch.utils.data import DataLoader, Dataset
 from torch.optim import Adam
 from pytorch_lightning import LightningModule, Trainer
 
-from ppo_gridnet_self_attention import GlobalMultiHeadAttentionEncoder
-
 
 class OfflineSelfAttention(LightningModule):
 
@@ -20,46 +18,78 @@ class OfflineSelfAttention(LightningModule):
     def add_model_specific_args(parent_parser):
         return parent_parser
 
-    def __init__(self, input_channels=27, output_channels=78, embed_dim=16, lr=1e-3):
+    def __init__(
+        self,
+        input_channels=27,
+        output_channels=78,
+        embed_dim=64,
+        bias=True,
+        num_heads=1,
+        context_dropout=0.1,
+        context_norm_eps=1e-5,
+        ortho_init=np.sqrt(2),
+        lr=1e-4
+    ):
         super().__init__()
         self.save_hyperparameters()
         self.action_dims = (6, 4, 4, 4, 4, 7, 49)
-        self.self_attention = GlobalMultiHeadAttentionEncoder(
-            input_channels=input_channels,
+        self.proj_q = nn.Linear(input_channels, embed_dim, bias)
+        self.proj_k = nn.Linear(input_channels, embed_dim, bias)
+        self.proj_v = nn.Linear(input_channels, embed_dim, bias)
+        self.patch_attention = nn.MultiheadAttention(
+            num_heads=num_heads,
             embed_dim=embed_dim,
-            seq_len=7*7, # patch h*w
-            context_norm_eps=0.,
-            embed_norm_eps=0.,
-            combine_inputs=False,
+            batch_first=True
         )
-        self.actor = nn.Linear(input_channels + embed_dim*7*7, output_channels)
+        self.context_dropout = nn.Dropout(context_dropout)
+        if context_norm_eps > 0.:
+            self.context_norm = nn.LayerNorm(embed_dim, context_norm_eps)
+        else:
+            self.context_norm = nn.Identity()
+        self.actor = nn.Linear(input_channels + embed_dim, output_channels)
+        if ortho_init > 0.:
+            self._ortho_init(ortho_init)
 
-    # cell: [B, C]
-    # patch: [B, P_s, C]
+    def _ortho_init(self, gain=np.sqrt(2)):
+        nn.init.orthogonal_(self.proj_q.weight.data, gain)
+        nn.init.orthogonal_(self.proj_k.weight.data, gain)
+        nn.init.orthogonal_(self.proj_v.weight.data, gain)
+
     def forward(self, cell, patch):
-        # xxx(okachaiev): this is definitely wrong usage of the attention
-        # block. what should be done:
-        # - all cells in the patch generates K and V
-        # - central cell generates Q
-        # - attention applied to a single Q (repeated to match shape?)
-        # Also, it might be interesting to see if we can (or need) to have
-        # different weights for choosing between different actions
-        # Intuitivly attention necessary for a range unit is different from others
-        context, attn_weights = self.self_attention(patch)
-        context = context.reshape((-1, self.hparams.embed_dim*7*7))
-        action = self.actor(torch.cat([cell, context], dim=-1))
-        return action, attn_weights
+        """Inpt dims:
+         * cell: [B, C]
+         * patch: [B, P_s, C]
+
+        The algorithm works as the following:
+
+        - each cell in the patch generates K and V
+        - central cell generates Q
+        - attention applied to a single Q (repeated to match the shape)
+
+        Future considerations:
+
+        It might be interesting to see if we can (or need) to have different
+        attention weights for choosing between different actions. Intuitivly,
+        attention necessary for a range unit is different from others.
+        """
+        q = self.proj_q(cell).unsqueeze(1)
+        k, v = self.proj_k(patch), self.proj_v(patch)
+        # xxx(okachaiev): I guess I need to put mask on the central cell
+        # of the patch, so it cannot be used as a part of attention
+        context, attn_W = self.patch_attention(q, k, v)
+        context = self.context_norm(self.context_dropout(context))
+        context = context.squeeze(1)
+        # xxx(okachaiev): concat here requires additional LayerNorm
+        logits = self.actor(torch.cat([cell, context], dim=-1))
+        return logits, attn_W
 
     # xxx(okachaiev): if I want to add RNN for global context,
     # this should be very different
     def training_step(self, batch, batch_idx):
         x_cell, x_patch, y_action = batch
         y_logits, _ = self.forward(x_cell, x_patch)
-        dists = [
-            Categorical(logits=split, validate_args=False)
-            for split
-            in torch.split(y_logits, tuple(self.action_dims), dim=-1)
-        ]
+        # easier with NLLLoss but I want to regularize entropy
+        dists = [Categorical(logits=ls) for ls in torch.split(y_logits, self.action_dims, dim=-1)]
         log_probs = torch.stack([dist.log_prob(y_action[:, ind]) for ind, dist in enumerate(dists)])
         entropy = torch.stack([dist.entropy() for dist in dists])
 
@@ -69,12 +99,17 @@ class OfflineSelfAttention(LightningModule):
         # xxx(okachaiev): try out focal loss (as we doing objects detection, basically)
         return (-log_probs+entropy).mean()
 
+    # xxx(okachaiev): add validation
+    # xxx(okachaiev): add F1 and other accuracy metrics
+
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=self.hparams.lr)
 
 
 # xxx(okachaiev): filter out empty cells, they don't matter
 class OfflineTrajectoryPatchDataset(Dataset):
+
+    EMPTY_CELL_IND = 13
 
     def __init__(self, obs, mask, action, patch=(7,7)):
         # obs [B, H, W, C] -> [B, C, H, W]
@@ -89,10 +124,12 @@ class OfflineTrajectoryPatchDataset(Dataset):
             patches = to_patches(obs, kernel, padding=(h//2, w//2))
             patches = patches.reshape((B*H*W , C, h*w)).permute((0, 2, 1))
 
-        self.obs = patches
-        self.cells = obs.permute((0, 2, 3, 1)).reshape((B*H*W, C))
+        cells = obs.permute((0, 2, 3, 1)).reshape((B*H*W, C))
+        non_empty = cells[:,self.EMPTY_CELL_IND] == 0.
+        self.obs = patches[non_empty]
+        self.cells = cells[non_empty]
         # action: [B, H*W*C_out] -> [B*H*W, C_out]
-        self.action = action.reshape((B*H*W, -1))
+        self.action = action.reshape((B*H*W, -1))[non_empty]
 
     def __getitem__(self, ind):
         return (self.cells[ind], self.obs[ind], self.action[ind])
@@ -157,6 +194,10 @@ def to_patches(
     return y.view(B, C, h, w, -1).permute(0, 4, 1, 2, 3)
 
 
+# good dataset to practice on:
+# offline_rl/1642390171 with 7* 1_000 steps
+# offline_rl/1642390276 with 7*50_000 steps
+
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser = Trainer.add_argparse_args(parser)
@@ -166,7 +207,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     train_dataset = load_dataset(args.dataset)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
 
     print(f"Loaded dataset, n_rows={len(train_dataset)}")
 
