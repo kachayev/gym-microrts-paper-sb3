@@ -42,6 +42,9 @@ class OfflineSelfAttention(LightningModule):
         # - all cells in the patch generates K and V
         # - central cell generates Q
         # - attention applied to a single Q (repeated to match shape?)
+        # Also, it might be interesting to see if we can (or need) to have
+        # different weights for choosing between different actions
+        # Intuitivly attention necessary for a range unit is different from others
         context, attn_weights = self.self_attention(patch)
         context = context.reshape((-1, self.hparams.embed_dim*7*7))
         action = self.actor(torch.cat([cell, context], dim=-1))
