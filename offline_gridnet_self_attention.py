@@ -116,8 +116,6 @@ class OfflinePatchAwareAttention(LightningModule):
 # xxx(okachaiev): option to save/load tensors to avoid waiting for compute each time
 class OfflineTrajectoryPatchDataset(Dataset):
 
-    EMPTY_CELL_IND = 13
-
     def __init__(self, obs, mask, action, patch=(7,7)):
         # obs [B, H, W, C] -> [B, C, H, W]
         obs = torch.from_numpy(obs).float().permute((0, 3, 1, 2))
@@ -132,15 +130,9 @@ class OfflineTrajectoryPatchDataset(Dataset):
             patches = patches.reshape((B*H*W , C, h*w)).permute((0, 2, 1))
 
         cell = obs.permute((0, 2, 3, 1)).reshape((B*H*W, C))
-        # action: [B, H*W*C_out] -> [B*H*W, C_out]
+        # action, mask: [B, H*W*C_out] -> [B*H*W, C_out]
         action = action.reshape((B*H*W, -1))
         mask = mask.reshape((B*H*W, -1))
-
-        non_empty = cell[:,self.EMPTY_CELL_IND] == 0.
-        patches = patches[non_empty]
-        cell = cell[non_empty]
-        action = action[non_empty]
-        mask = mask[non_empty]
 
         # this is not exactly the most accurate way to identify
         # which of the performed actions were masked or not.
