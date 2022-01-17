@@ -114,7 +114,6 @@ class OfflinePatchAwareAttention(LightningModule):
 
 
 # xxx(okachaiev): option to save/load tensors to avoid waiting for compute each time
-# xxx(okachaiev): definitely should apply masks, no need to learn masked actions
 class OfflineTrajectoryPatchDataset(Dataset):
 
     EMPTY_CELL_IND = 13
@@ -122,7 +121,7 @@ class OfflineTrajectoryPatchDataset(Dataset):
     def __init__(self, obs, mask, action, patch=(7,7)):
         # obs [B, H, W, C] -> [B, C, H, W]
         obs = torch.from_numpy(obs).float().permute((0, 3, 1, 2))
-        # mask = torch.from_numpy(mask)
+        mask = torch.from_numpy(mask)
         action = torch.from_numpy(action).long()
         B, C, H, W = obs.shape
         h, w = patch
@@ -132,15 +131,32 @@ class OfflineTrajectoryPatchDataset(Dataset):
             patches = to_patches(obs, kernel, padding=(h//2, w//2))
             patches = patches.reshape((B*H*W , C, h*w)).permute((0, 2, 1))
 
-        cells = obs.permute((0, 2, 3, 1)).reshape((B*H*W, C))
-        non_empty = cells[:,self.EMPTY_CELL_IND] == 0.
-        self.obs = patches[non_empty]
-        self.cells = cells[non_empty]
+        cell = obs.permute((0, 2, 3, 1)).reshape((B*H*W, C))
         # action: [B, H*W*C_out] -> [B*H*W, C_out]
-        self.action = action.reshape((B*H*W, -1))[non_empty]
+        action = action.reshape((B*H*W, -1))
+        mask = mask.reshape((B*H*W, -1))
+
+        non_empty = cell[:,self.EMPTY_CELL_IND] == 0.
+        patches = patches[non_empty]
+        cell = cell[non_empty]
+        action = action[non_empty]
+        mask = mask[non_empty]
+
+        # this is not exactly the most accurate way to identify
+        # which of the performed actions were masked or not.
+        # effectively, this only filters out those cases where
+        # no actions could be performed at all. not sure why it
+        # disregards so many observasions though
+        # to do so, we need to compute cat(*one_hot()) @ masks
+        # and after that collapse tensor back to sampled values
+        non_masked = mask.sum(dim=-1) > 0
+        self.obs = patches[non_masked]
+        self.cell = cell[non_masked]
+        self.action = action[non_masked]
+        self.mask = mask[non_masked]
 
     def __getitem__(self, ind):
-        return (self.cells[ind], self.obs[ind], self.action[ind])
+        return (self.cell[ind], self.obs[ind], self.action[ind])
 
     def __len__(self):
         return self.obs.size(0)
