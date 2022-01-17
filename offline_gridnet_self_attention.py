@@ -88,8 +88,10 @@ class OfflinePatchAwareAttention(LightningModule):
         # xxx(okachaiev): log visuals for attention weights (tensorboard supports images)
         return logits, attn_W
 
-    # xxx(okachaiev): if I want to add RNN for global context,
-    # this should be very different
+    # xxx(okachaiev): if I want to add RNN or CNN for global context,
+    # this should be very different. in such a case I will need to have
+    # batch of (obs, patches, cells, actions). or just (obs, actions)
+    # and maintain patches here (otherwise num of items might be different)
     def training_step(self, batch, batch_idx):
         x_cell, x_patch, y_action = batch
         y_logits, _ = self.forward(x_cell, x_patch)
@@ -116,7 +118,25 @@ class OfflinePatchAwareAttention(LightningModule):
 # xxx(okachaiev): option to save/load tensors to avoid waiting for compute each time
 class OfflineTrajectoryPatchDataset(Dataset):
 
-    def __init__(self, obs, mask, action, patch=(7,7)):
+    def __init__(self, patch, cell, mask, action):
+        self.patch = patch
+        self.cell = cell
+        self.action = action
+        self.mask = mask
+
+    @classmethod
+    def load_from_numpy(cls, files, patch=(7,7)):
+        obs, mask, action = [], [], []
+        for filepath in files:
+            data = np.load(filepath)
+            obs.extend(data['obs'])
+            mask.extend(data['mask'])
+            action.extend(data['action'])
+
+        return cls.from_numpy(np.stack(obs), np.stack(mask), np.stack(action), patch=patch)
+
+    @classmethod
+    def from_numpy(cls, obs, mask, action, patch=(7,7)):
         # obs [B, H, W, C] -> [B, C, H, W]
         obs = torch.from_numpy(obs).float().permute((0, 3, 1, 2))
         mask = torch.from_numpy(mask)
@@ -142,33 +162,44 @@ class OfflineTrajectoryPatchDataset(Dataset):
         # to do so, we need to compute cat(*one_hot()) @ masks
         # and after that collapse tensor back to sampled values
         non_masked = mask.sum(dim=-1) > 0
-        self.obs = patches[non_masked]
-        self.cell = cell[non_masked]
-        self.action = action[non_masked]
-        self.mask = mask[non_masked]
+        return cls(patches[non_masked], cell[non_masked], action[non_masked], mask[non_masked])
+
+    @classmethod
+    def load(cls, filepath):
+        data = torch.load(filepath)
+        return cls(data['patch'], data['cell'], data['action'], data['mask'])
+
+    def save(self, filepath):
+        torch.save({
+            "patch": self.patch,
+            "cell": self.cell,
+            "action": self.action,
+            "mask": self.mask,
+        }, filepath)
 
     def __getitem__(self, ind):
-        return (self.cell[ind], self.obs[ind], self.action[ind])
+        return (self.cell[ind], self.patch[ind], self.action[ind])
 
     def __len__(self):
-        return self.obs.size(0)
+        return self.patch.size(0)
 
 
-def load_dataset(folder: Union[str, Path], max_items:int=0) -> Dataset:
+# xxx(okachaiev): i need to maintain different compress files for different patches
+def load_dataset(folder: Union[str, Path], compressed_filepath:str="compressed.pt") -> Dataset:
     if isinstance(folder, str):
         folder = Path(folder)
 
-    obs, mask, action = [], [], []
-    num_loaded = 0
-    for filepath in folder.glob("*.npz"):
-        if not max_items or num_loaded < max_items:
-            dataset = np.load(filepath)
-            obs.extend(dataset['obs'])
-            mask.extend(dataset['mask'])
-            action.extend(dataset['action'])
-            num_loaded += len(dataset['obs'])
+    compressed_file = folder.joinpath(compressed_filepath)
+    if compressed_file.exists():
+        return OfflineTrajectoryPatchDataset.load(str(compressed_file))
 
-    return OfflineTrajectoryPatchDataset(np.stack(obs), np.stack(mask), np.stack(action))
+    numpy_files = list(folder.glob("*.npz"))
+    if numpy_files:
+        dataset = OfflineTrajectoryPatchDataset.load_from_numpy(numpy_files)
+        dataset.save(str(compressed_file))
+        return dataset
+
+    raise ValueError("No dataset files are found (*.npz or *.pt)")
 
 
 def patch_kernel(H: int, W: int, eps: float = 1e-6) -> torch.Tensor:
