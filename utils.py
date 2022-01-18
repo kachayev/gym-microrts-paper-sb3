@@ -30,7 +30,7 @@ class VecKeyedFrameStack(VecFrameStack):
         VecEnvWrapper.__init__(self, venv, observation_space=observation_space)
 
 
-class KeyedStackedDictObservations(StackedDictObservations):
+class KeyedStackedDictObservations(StackedObservations):
 
     def __init__(self, num_envs, n_stack, observation_space, channels_order=None, stacked_keys=None):
         self.stacked_keys = set(stacked_keys) or set(observation_space.spaces.keys())
@@ -42,7 +42,7 @@ class KeyedStackedDictObservations(StackedDictObservations):
 
         for key, subspace in observation_space.spaces.items():
             if key not in self.stacked_keys:
-                self.stackedobs[key] = None
+                self.stackedobs[key] = np.zeros((num_envs,) + subspace.low.shape, subspace.low.dtype)
             else:
                 assert isinstance(subspace, spaces.Box), "StackedDictObservations only works with nested gym.spaces.Box"
                 if isinstance(channels_order, str) or channels_order is None:
@@ -69,14 +69,14 @@ class KeyedStackedDictObservations(StackedDictObservations):
 
     def reset(self, observation: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         for key, obs in observation.items():
-            if key in self.stacked_keys:
+            if key not in self.stacked_keys:
+                self.stackedobs[key] = obs
+            else:
                 self.stackedobs[key][...] = 0
                 if self.channels_first[key]:
                     self.stackedobs[key][:, -obs.shape[self.stack_dimension[key]] :, ...] = obs
                 else:
                     self.stackedobs[key][..., -obs.shape[self.stack_dimension[key]] :] = obs
-            else:
-                self.stackedobs[key] = obs
         return self.stackedobs
 
     def update(self, observations, dones, infos):

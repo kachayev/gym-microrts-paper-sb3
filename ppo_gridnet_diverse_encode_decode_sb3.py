@@ -221,7 +221,7 @@ class NoopFeaturesExtractor(BaseFeaturesExtractor):
 # xxx(okachaiev): should this go to "feature extractor" configuration?
 class MicroRTSExtractor(nn.Module):
 
-    def __init__(self, input_channels=27, output_channels=78, action_space_size=None, device = "auto"):
+    def __init__(self, input_channels, output_channels, action_space_size=None, device = "auto"):
         super(MicroRTSExtractor, self).__init__()
 
         # xxx(okachaiev): requires reading the documentation
@@ -443,7 +443,7 @@ def setup_env(args):
     envs = VecMonitor(envs)
 
     if args.n_frame > 0:
-        envs = VecKeyedFrameStack(envs, args.n_frame, "last", ["obs"])
+        envs = VecKeyedFrameStack(envs, args.n_frame, "last", stacked_keys=["obs"])
 
     return envs
 
