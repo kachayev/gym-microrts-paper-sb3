@@ -11,6 +11,10 @@ from torch.utils.data import DataLoader, Dataset
 from torch.optim import Adam
 from pytorch_lightning import LightningModule, Trainer
 
+def _ortho_init(m):
+    if type(m) == nn.Linear:
+        nn.init.kaiming_uniform_(m.weight.data)
+        nn.init.constant_(m.bias.data, 0)
 
 class OfflinePatchAwareAttention(LightningModule):
 
@@ -21,7 +25,6 @@ class OfflinePatchAwareAttention(LightningModule):
     def __init__(
         self,
         input_channels=27,
-        output_channels=78,
         embed_dim=64,
         bias=True,
         num_heads=1,
@@ -32,7 +35,8 @@ class OfflinePatchAwareAttention(LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.action_dims = (6, 4, 4, 4, 4, 7, 49)
+        self.action_dims = (4, 4, 4, 4, 7)
+        self.output_channels = sum(self.action_dims)
         self.proj_q = nn.Linear(input_channels, embed_dim, bias)
         self.proj_k = nn.Linear(input_channels, embed_dim, bias)
         self.proj_v = nn.Linear(input_channels, embed_dim, bias)
@@ -47,15 +51,20 @@ class OfflinePatchAwareAttention(LightningModule):
             nn.Linear(input_channels + embed_dim, embed_dim),
             nn.ReLU(),
             nn.Dropout(0.5), # unstable actor here to regularize encoder
-            nn.Linear(embed_dim, output_channels),
+            nn.Linear(embed_dim, self.output_channels),
+        )
+        self.action_gate = nn.Sequential(
+            nn.Linear(input_channels+embed_dim, embed_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(embed_dim, 6),
+            nn.LogSoftmax(dim=-1),
         )
         if ortho_init > 0.:
-            self._ortho_init(ortho_init)
-
-    def _ortho_init(self, gain=np.sqrt(2)):
-        nn.init.orthogonal_(self.proj_q.weight.data, gain)
-        nn.init.orthogonal_(self.proj_k.weight.data, gain)
-        nn.init.orthogonal_(self.proj_v.weight.data, gain)
+            self.proj_q.apply(_ortho_init)
+            self.proj_k.apply(_ortho_init)
+            self.proj_v.apply(_ortho_init)
+            self.action_gate.apply(_ortho_init)
 
     def forward(self, cell, patch):
         """Inpt dims:
@@ -84,9 +93,11 @@ class OfflinePatchAwareAttention(LightningModule):
             context = self.context_norm(context)
         context = context.squeeze(1)
         # xxx(okachaiev): concat here requires additional LayerNorm
-        logits = self.actor(torch.cat([cell, context], dim=-1))
+        x = torch.cat([cell, context], dim=-1)
+        g_weights = self.action_gate(x)
+        logits = self.actor(x)
         # xxx(okachaiev): log visuals for attention weights (tensorboard supports images)
-        return logits, attn_W
+        return g_weights, logits, attn_W
 
     # xxx(okachaiev): if I want to add RNN or CNN for global context,
     # this should be very different. in such a case I will need to have
@@ -94,19 +105,27 @@ class OfflinePatchAwareAttention(LightningModule):
     # and maintain patches here (otherwise num of items might be different)
     def training_step(self, batch, batch_idx):
         x_cell, x_patch, y_action = batch
-        y_logits, _ = self.forward(x_cell, x_patch)
+        y_g_weights, y_logits, _ = self.forward(x_cell, x_patch)
+
+        # gating loss
+        loss_G = F.nll_loss(y_g_weights, y_action[:, 0], reduction='mean')
+
+        self.log("train/gate_nll_loss", loss_G)
+
+        # action prediction loss
         # easier with NLLLoss but I want to regularize entropy
         dists = [Categorical(logits=ls) for ls in torch.split(y_logits, self.action_dims, dim=-1)]
         # as of now, just removing the last component
         # i should either introduce weights, or train separate networks
-        log_probs = torch.stack([dist.log_prob(y_action[:, ind]) for ind, dist in enumerate(dists[:-1])])
+        log_probs = torch.stack([dist.log_prob(y_action[:, ind+1]) for ind, dist in enumerate(dists)])
         entropy = torch.stack([dist.entropy() for dist in dists[:-1]])
 
-        self.log("train/log_prob", log_probs.detach().mean())
-        self.log("train/entropy", entropy.detach().mean())
+        self.log("train/log_prob", log_probs.mean())
+        self.log("train/entropy", entropy.mean())
 
         # xxx(okachaiev): try out focal loss (as we doing objects detection, basically)
-        return (-log_probs+entropy).mean()
+        # return gate_loss.mean(dim=-1) + (-1)*log_probs.mean(dim=-1) + entropy.mean(dim=-1)
+        return loss_G
 
     # xxx(okachaiev): add validation
     # xxx(okachaiev): add F1 and other accuracy metrics
