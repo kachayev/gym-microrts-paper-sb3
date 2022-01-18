@@ -9,12 +9,14 @@ from torch.distributions.categorical import Categorical
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
 from stable_baselines3.common.distributions import Distribution
 from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecMonitor, VecEnvWrapper
-from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
+
+from utils import VecKeyedFrameStack
 
 import gym
 from gym_microrts import microrts_ai
@@ -428,7 +430,7 @@ class MicroRTSStatsCallback(BaseCallback):
                 return
 
 
-def main(args, policy_hparams: Optional[Dict[str, Any]] = None):
+def setup_env(args):
     envs = CustomMicroRTSGridMode(
         num_selfplay_envs=args.num_selfplay_envs,
         max_steps=args.max_steps,
@@ -439,6 +441,15 @@ def main(args, policy_hparams: Optional[Dict[str, Any]] = None):
     )
     envs = MicroRTSStatsRecorder(envs)
     envs = VecMonitor(envs)
+
+    if args.n_frame > 0:
+        envs = VecKeyedFrameStack(envs, args.n_frame, "last", ["obs"])
+
+    return envs
+
+
+def main(args, policy_hparams: Optional[Dict[str, Any]] = None):
+    envs = setup_env(args)
 
     save_path = f"{args.exp_folder}/{args.experiment_name}"
 
@@ -482,6 +493,9 @@ def main(args, policy_hparams: Optional[Dict[str, Any]] = None):
 if __name__ == "__main__":
     register_policy('MicroRTSGridActorCritic', MicroRTSGridActorCritic)
 
-    args = parse_arguments(make_parser())
+    parser = make_parser()
+    parser.add_argument("--n-frame", type=int, default=0,
+                        help="weather observations should be stacked over multiple frames (disabled by default)")
+    args = parse_arguments(parser)
 
     main(args)
