@@ -22,6 +22,7 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
     ParseBotEnvs,
     _parse_bot_envs
 )
+from rendering import Viewer as MicroRTSViewer
 
 class OfflineDatasetRecorder(VecEnvWrapper):
 
@@ -101,7 +102,8 @@ def create_env(args):
         render_theme=2,
         ai2s=args.bot_envs,
         map_paths=["maps/16x16/basesWorkers16x16.xml"],
-        reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0])
+        reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0]),
+        microrts_jar_path="/Users/okachaiev/Workspace/gym-microrts-fork/gym-microrts/gym_microrts/microrts/microrts.jar",
     )
     env = VecMonitor(env)
 
@@ -221,13 +223,18 @@ if __name__ == "__main__":
 
     print(f"Model is succesfully loaded, device={model.device}")
 
-    obs = env.reset()
+    viewer = MicroRTSViewer(640, 640)
 
+    print(f"Env rendering engine is loaded")
+
+    obs = env.reset()
+    viewer.render(env.vec_client.clients[0].gs)
     progress = trange(args.total_timesteps, desc="R=? V=? I=?")
     with torch.no_grad():
         for i in progress:
             action, value = model.predict(obs, deterministic=False)
             obs, reward, done, info = env.step(action)
+            viewer.render(env.vec_client.clients[0].gs)
             raw_reward = np.array([e['raw_rewards'] for e in info]).sum(axis=0)
             # xxx(okachaiev): this description definitely need some work
             progress.set_description(f"R={reward.mean():0.4f} V={value.mean():0.4f} I={raw_reward}")
