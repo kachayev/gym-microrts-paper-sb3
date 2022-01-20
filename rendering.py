@@ -57,6 +57,9 @@ class ActionType:
 # xxx(okachaiev): I should definitely separate the concept of
 # "screen" and "renderer engine" to avoid mixing the logic for
 # dealing with GL vertices together with the logic of the game
+# configuration options for entire window should go separately
+# from a single Panel for a game. same for additional panels,
+# like matplotlib charts or and others
 class Viewer:
 
     def __init__(self, player_names:List[str], height:int=640, width:int=640, title:str="MicroRTS"):
@@ -68,7 +71,6 @@ class Viewer:
         self._viewer.window.set_caption(title)
         self._init_grid()
         self._reset_canvas()
-        # xxx(okachaiev): add text label with bot names and stats
 
     def _init_grid(self):
         self._map_height, self._map_width = 16, 16
@@ -187,10 +189,10 @@ class Viewer:
     def _add_building_geom(self, cell, building_type, hp, max_hp, resources, owner):
         x, y = self._cell_to_coords(cell)
         color, = building_config[building_type]
-        border_color = blue if owner == 1 else pink
+        border_color = player_colors[owner]
         rect = pyglet.shapes.BorderedRectangle(
             x-self._step/2, y-self._step/2, self._step, self._step,
-            border=2,
+            border=3,
             color=color, border_color=border_color,
             batch=self._batch, group=self._groups["background"]
         )
@@ -222,7 +224,7 @@ class Viewer:
     def _add_unit_geom(self, cell, unit_type, hp, max_hp, direction, resources, owner):
         x, y = self._cell_to_coords(cell)
         color, radius = unit_config[unit_type]
-        border_color = blue if owner == 1 else pink
+        border_color = player_colors[owner]
         back_circle = pyglet.shapes.Circle(
             x, y, radius*self._step/2+2,
             color=border_color,
@@ -264,7 +266,7 @@ class Viewer:
 
     def _add_production_geom(self, cell, progress, label_text, owner):
         x, y = self._cell_to_coords(cell)
-        color = blue if owner == 1 else pink
+        color = player_colors[owner]
         bar = self._add_progress_bar_geom((x,y), progress, color, None)
         text = pyglet.text.Label(
             label_text,
@@ -294,17 +296,20 @@ class Viewer:
                     unit.getMaxHitPoints(),
                     None if not action else action.action.getDirection(),
                     unit.getResources(),
-                    unit.getPlayer()+1, # xxx(kachaiev): should it be +1?
+                    unit.getPlayer(),
                 )
             elif unit.getType().name in building_config:
+                stockpile = 0
+                if unit.getType().isStockpile:
+                    stockpile = gs.getPlayer(unit.getPlayer()).getResources()
                 # should be a building
                 self._add_building_geom(
                     cell,
                     unit.getType().name,
                     unit.getHitPoints(),
                     unit.getMaxHitPoints(),
-                    unit.getResources(),
-                    unit.getPlayer()+1, # xxx(kachaiev): should it be +1?
+                    stockpile,
+                    unit.getPlayer(),
                 )
                 if action is not None and action.action.getType() == ActionType.PRODUCE:
                     eta = action.time + action.action.ETA(action.unit) - gs.getTime()
@@ -312,8 +317,8 @@ class Viewer:
                     label = str(action.action.getUnitType().name)
                     direction = action.action.getDirection()
                     offset_x, offset_y = direction_offsets[direction]
-                    action_cell = (unit.getY()+1+offset_y, unit.getX()+1+offset_x)
-                    self._add_production_geom(action_cell, progress, label, unit.getPlayer()+1)
+                    action_cell = (unit.getX()+1+offset_x, unit.getY()+1+offset_y)
+                    self._add_production_geom(action_cell, progress, label, unit.getPlayer())
 
         self._viewer.render()
 
@@ -329,21 +334,3 @@ class Viewer:
 
     def __del__(self):
         self.close()
-
-
-# g1 = resource_geom((1,1), 25)
-# g2 = resource_geom((2,1), 20)
-# g3 = resource_geom((15,16), 20)
-# g4 = resource_geom((16,16), 25)
-
-# g5 = building_geom((3,3), "base", 3, None, 3, 1)
-# g6 = building_geom((14,14), "base", 3, None, 7, 2)
-# g7 = building_geom((3,7), "barracks", 3, None, 0, 1)
-
-# g8 = unit_geom((3,8), "worker", 20, None, 1, 1)
-# g9 = unit_geom((8,3), "light", 20, "w", 0, 2)
-# g10 = unit_geom((12,12), "heavy", 3, None, 3, 2)
-# g11 = unit_geom((10,14), "range", 5, "n", 0, 2)
-
-# g12 = production_geom((9,9), 0.5, "worker", 1)
-# g13 = production_geom((11,9), 0.8, "worker", 2)
