@@ -99,12 +99,20 @@ class Viewer:
             for v in self._canvas:
                 if hasattr(v, "delete"):
                     v.delete()
+            for label in self._labels:
+                label.delete()
         self._canvas = []
+        self._labels = []
         # xxx(okachaiev): dropping entire batch is brutal
         self._init_layers()
 
-    def _add_to_canvas(self, *geom):
-        self._canvas.append(geom)
+    def _add_to_canvas(self, *geoms):
+        for geom in geoms:
+            self._canvas.append(geom)
+
+    def _add_label_to_canvas(self, *labels):
+        for label in labels:
+            self._labels.append(label)
 
     def _cell_to_coords(self, cell: Tuple[int, int]) -> Tuple[float, float]:
         row, col = cell
@@ -122,7 +130,7 @@ class Viewer:
             anchor_x="center", anchor_y="center",
             batch=self._batch, group=self._groups["texts"]
         )
-        self._add_to_canvas(geom)
+        self._add_label_to_canvas(geom)
         return geom
 
     def _add_resource_geom(self, cell, resources):
@@ -223,7 +231,7 @@ class Viewer:
             anchor_x="center", anchor_y="center",
             batch=self._batch, group=self._groups["texts"]
         )
-        self._add_to_canvas(text)
+        self._add_label_to_canvas(text)
         return bar, text
 
     def render(self, gs):
