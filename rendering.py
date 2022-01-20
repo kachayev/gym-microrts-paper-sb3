@@ -1,10 +1,11 @@
 import numpy as np
 import pyglet
-from typing import Tuple
+from typing import List, Tuple
 
-from gym.envs.classic_control.rendering import Viewer as GymViewer, Geom, Line
+from gym.envs.classic_control.rendering import Viewer as GymViewer, Geom
 
 # xxx(okachaiev): setup proper color pallet structure
+black = (0,0,0)
 green = (0,158,115)
 yellow = (240,228,66)
 blue = (0,114,178)
@@ -27,6 +28,8 @@ building_config = {
     "Base": (silver,),
     "Barracks": (slategray,)
 }
+
+player_colors = [blue, pink]
 
 direction_offsets = [(0, 1), (1, 0), (0, -1), (-1, 0),]
 
@@ -56,7 +59,8 @@ class ActionType:
 # dealing with GL vertices together with the logic of the game
 class Viewer:
 
-    def __init__(self, height:int=640, width:int=640, title:str="MicroRTS"):
+    def __init__(self, player_names:List[str], height:int=640, width:int=640, title:str="MicroRTS"):
+        self._player_names = player_names
         self._height = height
         self._width = width
         # xxx(okachaiev): i actually don't need this indirection
@@ -68,19 +72,13 @@ class Viewer:
 
     def _init_grid(self):
         self._map_height, self._map_width = 16, 16
-        self._offset = 20
-        xs, self._step = np.linspace(
+        self._offset = 40
+        self._xs, self._step = np.linspace(
             self._offset, self._width-self._offset, self._map_width+1, retstep=True
         )
         # xxx(okachaiev): this won't work for non-squared maps
         # i need to fit squares into min dimention and center to fit max dimension
-        self._centers = xs[:-1]+self._step/2
-        for start in xs:
-            # xxx(okachaiev): do not use Gym shapes, pyglet is fine as is
-            # though I need to remember to keep it off of canvas list
-            # so they don't disappear on "reset"
-            self._viewer.add_geom(Line((start, self._offset), (start, self._width-self._offset)))
-            self._viewer.add_geom(Line((self._offset, start), (self._width-self._offset, start)))
+        self._centers = self._xs[:-1]+self._step/2
 
     def _init_layers(self):
         self._batch = pyglet.graphics.Batch()
@@ -90,11 +88,13 @@ class Viewer:
             "circle_foreground": pyglet.graphics.OrderedGroup(1),
             "texts": pyglet.graphics.OrderedGroup(2),
             "progress": pyglet.graphics.OrderedGroup(3),
+            "grid": pyglet.graphics.OrderedGroup(4),
         }
 
     # xxx(okachaiev): it might be not the best approach to redefine
     # all geometries but it's a good enough starting point. later
     # i can reimplement it to track changes in already defined shapes
+    # dropping entire batch seems brutal
     def _reset_canvas(self):
         if hasattr(self, "_canvas"):
             for v in self._canvas:
@@ -104,8 +104,9 @@ class Viewer:
                 label.delete()
         self._canvas = []
         self._labels = []
-        # xxx(okachaiev): dropping entire batch is brutal
         self._init_layers()
+        self._add_grid_geom()
+        self._add_info_bar_geom()
 
     def _add_to_canvas(self, *geoms):
         for geom in geoms:
@@ -118,6 +119,43 @@ class Viewer:
     def _cell_to_coords(self, cell: Tuple[int, int]) -> Tuple[float, float]:
         row, col = cell
         return self._centers[col-1], self._width-self._centers[row-1]
+
+    def _add_grid_geom(self):
+        for start in self._xs:
+            hline = pyglet.shapes.Line(
+                start, self._offset, start, self._width-self._offset,
+                width=1, color=black,
+                batch=self._batch, group=self._groups["grid"]
+            )
+            wline = pyglet.shapes.Line(
+                self._offset, start, self._width-self._offset, start,
+                width=1, color=black,
+                batch=self._batch, group=self._groups["grid"]
+            )
+            self._add_to_canvas(hline, wline)
+
+    def _add_info_bar_geom(self):
+        dot_radius = 6
+        x, y = self._xs[0], self._xs[0] - self._offset/2
+        for ind, player_name in enumerate(self._player_names):
+            color = player_colors[ind]
+            player_dot = pyglet.shapes.Circle(
+                x+dot_radius, y, dot_radius,
+                color=color,
+                batch=self._batch, group=self._groups["grid"]
+            )
+            player_label = pyglet.text.Label(
+                player_name,
+                font_size=10,
+                color=(0,0,0,255),
+                bold=False,
+                x=x+dot_radius*2+4, y=y,
+                anchor_x="left", anchor_y="center",
+                batch=self._batch, group=self._groups["grid"]
+            )
+            self._add_to_canvas(player_dot)
+            self._add_label_to_canvas(player_label)
+            x += dot_radius*2+4 + player_label.content_width + 8
 
     def _add_resource_label_geom(self, cell_coords, resources, font_size=12):
         if resources == 0: return None
@@ -146,7 +184,6 @@ class Viewer:
         text = self._add_resource_label_geom((x, y), resources)
         return (rect, text)
 
-    # xxx(okachaiev): process hp/max_hp progress
     def _add_building_geom(self, cell, building_type, hp, max_hp, resources, owner):
         x, y = self._cell_to_coords(cell)
         color, = building_config[building_type]
@@ -159,8 +196,12 @@ class Viewer:
         )
         self._add_to_canvas(rect)
         text = self._add_resource_label_geom((x, y), resources)
-
-        return rect, text
+        hp_progress = None
+        if hp < max_hp:
+            # xxx(okachaiev): progress bar for units could look like missing segment
+            # rather than the bar on top of them
+            hp_progress = self._add_progress_bar_geom((x,y), hp/max_hp, color, darkred)
+        return rect, text, hp_progress
 
     def _add_unit_tick_geom(self, cell_coors, radius, direction, color):
         if direction is None: return None

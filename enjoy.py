@@ -223,7 +223,7 @@ if __name__ == "__main__":
 
     print(f"Model is succesfully loaded, device={model.device}")
 
-    viewer = MicroRTSViewer(640, 640)
+    viewer = MicroRTSViewer(["ppo_gridnet", "coacAI"], 640, 640)
 
     print(f"Env rendering engine is loaded")
 
