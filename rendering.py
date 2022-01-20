@@ -20,7 +20,7 @@ unit_config = {
     "Worker": (silver, 0.5),
     "Light": (yellow, 0.6),
     "Heavy": (orange, 0.6),
-    "Range": (deepskyblue, 0.8),
+    "Ranged": (deepskyblue, 0.8),
 }
 
 building_config = {
@@ -28,17 +28,12 @@ building_config = {
     "Barracks": (slategray,)
 }
 
-directions = {
-    "n": (0, 1),
-    "e": (1, 0),
-    "s": (0, -1),
-    "w": (-1, 0),
-}
+direction_offsets = [(0, 1), (1, 0), (0, -1), (-1, 0),]
 
 # xxx(okachaiev): would be nice to have geometry over point
 # with overloaded + and *
 def translate_direction(direction, length):
-    offset_x, offset_y = directions[direction]
+    offset_x, offset_y = direction_offsets[direction]
     return (offset_x*length, offset_y*length)
 
 # xxx(okachaiev): same here, no need for indications
@@ -51,16 +46,22 @@ class Proxy(Geom):
         self._obj.draw()
 
 
+# xxx(okachaiev): extend to all contstants
+class ActionType:
+    PRODUCE = 4
+
+
 # xxx(okachaiev): I should definitely separate the concept of
 # "screen" and "renderer engine" to avoid mixing the logic for
 # dealing with GL vertices together with the logic of the game
 class Viewer:
 
-    def __init__(self, height:int=640, width:int=640):
+    def __init__(self, height:int=640, width:int=640, title:str="MicroRTS"):
         self._height = height
         self._width = width
         # xxx(okachaiev): i actually don't need this indirection
         self._viewer = GymViewer(height, width)
+        self._viewer.window.set_caption(title)
         self._init_grid()
         self._reset_canvas()
         # xxx(okachaiev): add text label with bot names and stats
@@ -146,7 +147,7 @@ class Viewer:
         return (rect, text)
 
     # xxx(okachaiev): process hp/max_hp progress
-    def _add_building_geom(self, cell, building_type, hp, max_hp, production, resources, owner):
+    def _add_building_geom(self, cell, building_type, hp, max_hp, resources, owner):
         x, y = self._cell_to_coords(cell)
         color, = building_config[building_type]
         border_color = blue if owner == 1 else pink
@@ -158,13 +159,15 @@ class Viewer:
         )
         self._add_to_canvas(rect)
         text = self._add_resource_label_geom((x, y), resources)
+
         return rect, text
 
     def _add_unit_tick_geom(self, cell_coors, radius, direction, color):
         if direction is None: return None
+        if direction > 3: return None
         x, y = cell_coors
         offset_x, offset_y = translate_direction(direction, radius)
-        offset_x_hat, offset_y_hat = translate_direction(direction, step)
+        offset_x_hat, offset_y_hat = translate_direction(direction, self._step)
         line = pyglet.shapes.Line(
             x+offset_x, y+offset_y, x+offset_x_hat, y+offset_y_hat,
             width=2, color=color,
@@ -202,7 +205,7 @@ class Viewer:
     def _add_progress_bar_geom(self, cell_coords, progress, color, background_color):
         x, y = cell_coords
         left_bar = pyglet.shapes.Rectangle(
-            x-self._step/2, y+self._step/2-(0.2*self._step), step*progress, 0.2*self._step,
+            x-self._step/2, y+self._step/2-(0.2*self._step), self._step*progress, 0.2*self._step,
             color=color,
             batch=self._batch, group=self._groups["progress"]
         )
@@ -238,7 +241,7 @@ class Viewer:
         self._reset_canvas()
 
         for unit in gs.getUnits():
-            # action = gs.getActionAssignment(u)
+            action = gs.getActionAssignment(unit)
             cell = (unit.getY()+1, unit.getX()+1)
             if unit.getType().isResource:
                 self._add_resource_geom(cell, unit.getResources())
@@ -248,25 +251,28 @@ class Viewer:
                     unit.getType().name,
                     unit.getHitPoints(),
                     unit.getMaxHitPoints(),
-                    None, # xxx(okachaiev): fill in or move out
+                    None if not action else action.action.getDirection(),
                     unit.getResources(),
                     unit.getPlayer()+1, # xxx(kachaiev): should it be +1?
                 )
-                # xxx(okachaiev): movement
-                # xxx(okachaiev): attacks
-                # xxx(okachaiev): harvset, return
             elif unit.getType().name in building_config:
                 # should be a building
-                # xxx(okachaiev): production
                 self._add_building_geom(
                     cell,
                     unit.getType().name,
                     unit.getHitPoints(),
                     unit.getMaxHitPoints(),
-                    None,
                     unit.getResources(),
                     unit.getPlayer()+1, # xxx(kachaiev): should it be +1?
                 )
+                if action is not None and action.action.getType() == ActionType.PRODUCE:
+                    eta = action.time + action.action.ETA(action.unit) - gs.getTime()
+                    progress = (1 - (eta / action.action.ETA(action.unit)))
+                    label = str(action.action.getUnitType().name)
+                    direction = action.action.getDirection()
+                    offset_x, offset_y = direction_offsets[direction]
+                    action_cell = (unit.getY()+1+offset_y, unit.getX()+1+offset_x)
+                    self._add_production_geom(action_cell, progress, label, unit.getPlayer()+1)
 
         self._viewer.render()
 
