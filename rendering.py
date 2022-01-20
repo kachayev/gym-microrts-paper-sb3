@@ -62,7 +62,6 @@ class Viewer:
         # xxx(okachaiev): i actually don't need this indirection
         self._viewer = GymViewer(height, width)
         self._init_grid()
-        self._init_layers()
         self._reset_canvas()
         # xxx(okachaiev): add text label with bot names and stats
 
@@ -97,8 +96,12 @@ class Viewer:
     # i can reimplement it to track changes in already defined shapes
     def _reset_canvas(self):
         if hasattr(self, "_canvas"):
-            del self._canvas
+            for v in self._canvas:
+                if hasattr(v, "delete"):
+                    v.delete()
         self._canvas = []
+        # xxx(okachaiev): dropping entire batch is brutal
+        self._init_layers()
 
     def _add_to_canvas(self, *geom):
         self._canvas.append(geom)
@@ -107,8 +110,9 @@ class Viewer:
         row, col = cell
         return self._centers[col-1], self._width-self._centers[row-1]
 
-    def _add_resource_label_geom(self, resources, x, y, font_size=12):
+    def _add_resource_label_geom(self, cell_coords, resources, font_size=12):
         if resources == 0: return None
+        x, y = cell_coords
         geom = pyglet.text.Label(
             str(resources),
             font_size=font_size,
@@ -130,7 +134,7 @@ class Viewer:
             batch=self._batch, group=self._groups["background"]
         )
         self._add_to_canvas(rect)
-        text = self._add_resource_label_geom(resources, x, y)
+        text = self._add_resource_label_geom((x, y), resources)
         return (rect, text)
 
     # xxx(okachaiev): process hp/max_hp progress
@@ -145,7 +149,7 @@ class Viewer:
             batch=self._batch, group=self._groups["background"]
         )
         self._add_to_canvas(rect)
-        text = self._add_resource_label_geom(resources, x, y)
+        text = self._add_resource_label_geom((x, y), resources)
         return rect, text
 
     def _add_unit_tick_geom(self, cell_coors, radius, direction, color):
@@ -178,7 +182,7 @@ class Viewer:
             batch=self._batch, group=self._groups["circle_foreground"]
         )
         self._add_to_canvas(back_circle, circle)
-        text = self._add_resource_label_geom(resources, x, y, font_size=9)
+        text = self._add_resource_label_geom((x, y), resources, font_size=9)
         tick = self._add_unit_tick_geom((x,y), radius*self._step/2, direction, border_color)
         hp_progress = None
         if hp < max_hp:
@@ -223,12 +227,11 @@ class Viewer:
         return bar, text
 
     def render(self, gs):
-        self._viewer.window.clear()
         self._reset_canvas()
 
         for unit in gs.getUnits():
             # action = gs.getActionAssignment(u)
-            cell = (unit.getX()+1, unit.getY()+1)
+            cell = (unit.getY()+1, unit.getX()+1)
             if unit.getType().isResource:
                 self._add_resource_geom(cell, unit.getResources())
             elif unit.getType().canMove:
@@ -244,7 +247,7 @@ class Viewer:
                 # xxx(okachaiev): movement
                 # xxx(okachaiev): attacks
                 # xxx(okachaiev): harvset, return
-            else:
+            elif unit.getType().name in building_config:
                 # should be a building
                 # xxx(okachaiev): production
                 self._add_building_geom(
