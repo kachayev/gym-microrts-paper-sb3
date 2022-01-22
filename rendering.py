@@ -32,6 +32,7 @@ building_config = {
 player_colors = [blue, pink]
 
 direction_offsets = [(0, 1), (1, 0), (0, -1), (-1, 0),]
+cell_direction_offsets = [(-1, 0), (0, 1), (1, 0), (0, -1)]
 
 # xxx(okachaiev): would be nice to have geometry over point
 # with overloaded + and *
@@ -136,6 +137,8 @@ class Viewer:
             )
             self._add_to_canvas(hline, wline)
 
+    # xxx(okachaiev): should have an option to add information for each
+    # player when rendering (like different rewards they got so far)
     def _add_info_bar_geom(self):
         dot_radius = 6
         x, y = self._xs[0], self._xs[0] - self._offset/2
@@ -209,6 +212,8 @@ class Viewer:
         if direction is None: return None
         if direction > 3: return None
         x, y = cell_coors
+        # xxx(okachaiev): if this is drawn first, there's no ned to compute
+        # 2 pairs of offsets. just start from the mid of the cell
         offset_x, offset_y = translate_direction(direction, radius)
         offset_x_hat, offset_y_hat = translate_direction(direction, self._step)
         line = pyglet.shapes.Line(
@@ -315,9 +320,8 @@ class Viewer:
                     eta = action.time + action.action.ETA(action.unit) - gs.getTime()
                     progress = (1 - (eta / action.action.ETA(action.unit)))
                     label = str(action.action.getUnitType().name)
-                    direction = action.action.getDirection()
-                    offset_x, offset_y = direction_offsets[direction]
-                    action_cell = (unit.getX()+1+offset_x, unit.getY()+1+offset_y)
+                    offset_row, offset_col = cell_direction_offsets[action.action.getDirection()]
+                    action_cell = (unit.getY()+1+offset_row, unit.getX()+1+offset_col)
                     self._add_production_geom(action_cell, progress, label, unit.getPlayer())
 
         self._viewer.render()
