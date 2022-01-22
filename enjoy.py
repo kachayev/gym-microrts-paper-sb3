@@ -22,7 +22,7 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
     ParseBotEnvs,
     _parse_bot_envs
 )
-from rendering import Viewer as MicroRTSViewer
+from rendering import Window, GameStatePanel, Tilemap
 
 class OfflineDatasetRecorder(VecEnvWrapper):
 
@@ -223,18 +223,45 @@ if __name__ == "__main__":
 
     print(f"Model is succesfully loaded, device={model.device}")
 
-    viewer = MicroRTSViewer(["ppo_gridnet", "coacAI"])
+    window = Window(640, 640, "MicroRTS")
+
+    # for a single game:
+    game_panel = GameStatePanel(
+        env.vec_client.clients[0],
+        # xxx(okachaiev): I should be able to get mapsize from the client
+        config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name="coacAI")])
+    )
+    window.add_panel(game_panel)
+
+    # for multiple games:
+    # game_tiles = [
+    #     GameStatePanel(
+    #         game_client,
+    #         # xxx(okachaiev): I should be able to get mapsize from the client
+    #         config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name=str(ai))])
+    #     )
+    #     for (ai, game_client)
+    #     in zip(args.bot_envs, env.vec_client.clients)
+    # ]
+    # window.add_panel(Tilemap(game_tiles))
+
 
     print(f"Env rendering engine is loaded")
 
     obs = env.reset()
-    viewer.render(env.vec_client.clients[0].gs)
+
+    # this API should be a part of "env.render()" and not visible for a user
+    window.render()
+
     progress = trange(args.total_timesteps, desc="R=? V=? I=?")
     with torch.no_grad():
         for i in progress:
             action, value = model.predict(obs, deterministic=False)
             obs, reward, done, info = env.step(action)
-            viewer.render(env.vec_client.clients[0].gs)
+
+            # this API should be a part of "env.render()" and not visible for a user
+            window.render()
+
             raw_reward = np.array([e['raw_rewards'] for e in info]).sum(axis=0)
             # xxx(okachaiev): this description definitely need some work
             progress.set_description(f"R={reward.mean():0.4f} V={value.mean():0.4f} I={raw_reward}")

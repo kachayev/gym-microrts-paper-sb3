@@ -7,6 +7,7 @@ from gym.envs.classic_control.rendering import get_display, get_window
 # if about OpenGL is available: gym's import would fail otherwise
 import pyglet
 from pyglet.gl import *
+from pyglet.graphics import Batch, OrderedGroup
 from pyglet.image import get_buffer_manager
 
 # xxx(okachaiev): setup proper color pallet structure
@@ -52,6 +53,7 @@ class ActionType:
 
 
 class Window:
+
     def __init__(self, width=640, height=640, title="MicroRTS", display=None):
         display = get_display(display)
 
@@ -66,8 +68,8 @@ class Window:
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-    # xxx(okachaiev): type annotation to require "on_render"
-    def register(self, panel):
+    def add_panel(self, panel):
+        panel.setup_viewport(self._width, self._height)
         self._panels.append(panel)
 
     def close(self):
@@ -101,22 +103,54 @@ class Window:
         return arr if return_rgb_array else self._open
 
     def __del__(self):
-        self.close()
+        # self.close()
+        pass
 
-class Viewer:
 
-    def __init__(self, player_names:List[str], window:Optional[Window]=None):
-        self._player_names = player_names
-        self._window = window or Window(640, 640, "MicroRTS")
-        self._window.register(self)
-        # xxx(okachaiev): assume it utilizes entire space, which should not
-        # be the case when rendering into tiles
-        self._height, self._width = self._window._height, self._window._width
+class Tilemap:
+    """Tilemap is a component responsible for rendering all
+    given panels in a tiled view as closed to square configuration
+    as possible.
+
+    The component manages setup and rendering for child views, and
+    is responsible for hanlding brining given tile into the focus
+    by providing keypress and mouse click handlers.
+    """
+
+    def __init__(self, tiles):
+        self._tiles = tiles
+        self._initialized = False
+
+    def setup_viewport(self, view_width, view_height):
+        self._initialized = True
+        pass
+
+    def close(self):
+        if self._initialized:
+            for tile in self._tiles:
+                tile.close()
+        self._initialized = False
+    
+    def __del__(self):
+        # self.close()
+        pass
+
+
+class GameStatePanel:
+
+    def __init__(self, client, config=None):
+        self._game_client = client
+        self._game_config = config or {}
+
+    # xxx(okachaiev): not sure if i need reference to the window
+    def setup_viewport(self, view_width, view_height):
+        self._width = view_width
+        self._height = view_height
         self._init_grid()
         self._reset_canvas()
 
     def _init_grid(self):
-        self._map_height, self._map_width = 16, 16
+        self._map_height, self._map_width = self._game_config["mapsize"]
         self._offset = 40
         self._xs, self._step = np.linspace(
             self._offset, self._width-self._offset, self._map_width+1, retstep=True
@@ -126,13 +160,13 @@ class Viewer:
         self._centers = self._xs[:-1]+self._step/2
 
     def _init_layers(self):
-        self._batch = pyglet.graphics.Batch()
+        self._batch = Batch()
         self._groups = {
-            "background": pyglet.graphics.OrderedGroup(0),
-            "circle_foreground": pyglet.graphics.OrderedGroup(1),
-            "texts": pyglet.graphics.OrderedGroup(2),
-            "progress": pyglet.graphics.OrderedGroup(3),
-            "grid": pyglet.graphics.OrderedGroup(4),
+            "background": OrderedGroup(0),
+            "circle_foreground": OrderedGroup(1),
+            "texts": OrderedGroup(2),
+            "progress": OrderedGroup(3),
+            "grid": OrderedGroup(4),
         }
 
     # xxx(okachaiev): it might be not the best approach to redefine
@@ -140,12 +174,12 @@ class Viewer:
     # i can reimplement it to track changes in already defined shapes
     # dropping entire batch seems brutal
     def _reset_canvas(self):
-        if hasattr(self, "_canvas"):
-            for v in self._canvas:
-                if hasattr(v, "delete"):
-                    v.delete()
-            for label in self._labels:
-                label.delete()
+        # if hasattr(self, "_canvas"):
+        #     for v in self._canvas:
+        #         if hasattr(v, "delete"):
+        #             v.delete()
+        #     for label in self._labels:
+        #         label.delete()
         self._canvas = []
         self._labels = []
         self._init_layers()
@@ -183,7 +217,7 @@ class Viewer:
     def _add_info_bar_geom(self):
         dot_radius = 6
         x, y = self._xs[0], self._xs[0] - self._offset/2
-        for ind, player_name in enumerate(self._player_names):
+        for ind, player_name in enumerate(p["name"] for p in self._game_config["players"]):
             color = player_colors[ind]
             player_dot = pyglet.shapes.Circle(
                 x+dot_radius, y, dot_radius,
@@ -326,16 +360,10 @@ class Viewer:
         self._add_label_to_canvas(text)
         return bar, text
 
-    # xxx(okachaiev): this API is absolutely horrible :(
-    # need to wrap my head around different options
-    def render(self, gs):
-        self._gs = gs
-        self._window.render()
-
     def on_render(self):
         self._reset_canvas()
 
-        gs = self._gs
+        gs = self._game_client.gs
 
         for unit in gs.getUnits():
             action = gs.getActionAssignment(unit)
@@ -379,4 +407,5 @@ class Viewer:
         self._reset_canvas()
 
     def __del__(self):
-        self.close()
+        # self.close()
+        pass
