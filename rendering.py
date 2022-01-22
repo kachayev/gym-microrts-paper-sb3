@@ -1,8 +1,13 @@
 import numpy as np
-import pyglet
-from typing import List, Tuple
+import sys
+from typing import List, Optional, Tuple
 
-from gym.envs.classic_control.rendering import Viewer as GymViewer, Geom
+from gym.envs.classic_control.rendering import get_display, get_window
+# as we've already imported gym's rendering we don't need to check
+# if about OpenGL is available: gym's import would fail otherwise
+import pyglet
+from pyglet.gl import *
+from pyglet.image import get_buffer_manager
 
 # xxx(okachaiev): setup proper color pallet structure
 black = (0,0,0)
@@ -40,36 +45,73 @@ def translate_direction(direction, length):
     offset_x, offset_y = direction_offsets[direction]
     return (offset_x*length, offset_y*length)
 
-# xxx(okachaiev): same here, no need for indications
-class Proxy(Geom):
-
-    def __init__(self, obj):
-        self._obj = obj
-    
-    def render(self):
-        self._obj.draw()
-
 
 # xxx(okachaiev): extend to all contstants
 class ActionType:
     PRODUCE = 4
 
 
-# xxx(okachaiev): I should definitely separate the concept of
-# "screen" and "renderer engine" to avoid mixing the logic for
-# dealing with GL vertices together with the logic of the game
-# configuration options for entire window should go separately
-# from a single Panel for a game. same for additional panels,
-# like matplotlib charts or and others
+class Window:
+    def __init__(self, width=640, height=640, title="MicroRTS", display=None):
+        display = get_display(display)
+
+        self._width = width
+        self._height = height
+        self._window = get_window(width=width, height=height, display=display)
+        self._window.on_close = self._window_closed_by_user
+        self._window.set_caption(title)
+        self._open = True
+        self._panels = []
+
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+    # xxx(okachaiev): type annotation to require "on_render"
+    def register(self, panel):
+        self._panels.append(panel)
+
+    def close(self):
+        if self._open and sys.meta_path:
+            for panel in self._panels:
+                if hasattr(panel, "close"):
+                    panel.close()
+            self.window.close()
+            self._open = False
+
+    def _window_closed_by_user(self):
+        self._open = False
+
+    def render(self, return_rgb_array=False):
+        glClearColor(1, 1, 1, 1)
+        self._window.clear()
+        self._window.switch_to()
+        self._window.dispatch_events()
+
+        for panel in self._panels:
+            panel.on_render()
+
+        rgb_array = None
+        if return_rgb_array:
+            buffer = get_buffer_manager().get_color_buffer()
+            image_data = buffer.get_image_data()
+            rgb_array = np.frombuffer(image_data.get_data(), dtype=np.uint8)
+            rgb_array = rgb_array.reshape(buffer.height, buffer.width, 4)
+            rgb_array = rgb_array[::-1, :, 0:3]
+        self._window.flip()
+        return arr if return_rgb_array else self._open
+
+    def __del__(self):
+        self.close()
+
 class Viewer:
 
-    def __init__(self, player_names:List[str], height:int=640, width:int=640, title:str="MicroRTS"):
+    def __init__(self, player_names:List[str], window:Optional[Window]=None):
         self._player_names = player_names
-        self._height = height
-        self._width = width
-        # xxx(okachaiev): i actually don't need this indirection
-        self._viewer = GymViewer(height, width)
-        self._viewer.window.set_caption(title)
+        self._window = window or Window(640, 640, "MicroRTS")
+        self._window.register(self)
+        # xxx(okachaiev): assume it utilizes entire space, which should not
+        # be the case when rendering into tiles
+        self._height, self._width = self._window._height, self._window._width
         self._init_grid()
         self._reset_canvas()
 
@@ -85,7 +127,6 @@ class Viewer:
 
     def _init_layers(self):
         self._batch = pyglet.graphics.Batch()
-        self._viewer.add_geom(Proxy(self._batch))
         self._groups = {
             "background": pyglet.graphics.OrderedGroup(0),
             "circle_foreground": pyglet.graphics.OrderedGroup(1),
@@ -285,8 +326,16 @@ class Viewer:
         self._add_label_to_canvas(text)
         return bar, text
 
+    # xxx(okachaiev): this API is absolutely horrible :(
+    # need to wrap my head around different options
     def render(self, gs):
+        self._gs = gs
+        self._window.render()
+
+    def on_render(self):
         self._reset_canvas()
+
+        gs = self._gs
 
         for unit in gs.getUnits():
             action = gs.getActionAssignment(unit)
@@ -324,17 +373,10 @@ class Viewer:
                     action_cell = (unit.getY()+1+offset_row, unit.getX()+1+offset_col)
                     self._add_production_geom(action_cell, progress, label, unit.getPlayer())
 
-        self._viewer.render()
-
-    def tick(self):
-        """Dispatch event without re-rendering"""
-        self._viewer.window.dispatch_events()
+        self._batch.draw()
 
     def close(self):
-        if self._viewer:
-            self._reset_canvas()
-            self._viewer.close()
-        self._viewer = None
+        self._reset_canvas()
 
     def __del__(self):
         self.close()
