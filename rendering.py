@@ -295,6 +295,7 @@ class GameStatePanel:
             "background",
             "ticks",
             "circle_foreground",
+            "unit_sprites",
             "texts",
             "progress",
             "grid"
@@ -590,6 +591,7 @@ class GameStatePanel:
         # self.close()
         pass
 
+
 class SpriteMap:
 
     def __init__(self, source_path, tilesize=(16,16), symbols=None):
@@ -625,6 +627,10 @@ class SpriteMap:
             geom.scale = scale
         return geom
 
+    @property
+    def tilesize(self):
+        return self._tw, self._th
+
 
 class SpritePanel:
 
@@ -659,17 +665,60 @@ class SpritePanel:
 
     def setup_canvas(self, canvas):
         self._canvas = canvas
+        self._water = SpriteBackgroundPanel(self.sprite_map)
+        self._water.setup_canvas(canvas)
+        self._land = SpiteBattlefieldPanel(self.sprite_map)
+        w, h = canvas.viewport
+        land_canvas = Subcanvas(canvas, w-16*16/2, h-16*16/2, 16*16, 16*16)
+        self._land.setup_canvas(land_canvas)
+
+    def on_render(self):
+        self._water.on_render()
+        self._land.on_render()
+
+
+class SpiteBattlefieldPanel:
+
+    def __init__(self, sprites):
+        self._sprites = sprites
+
+    def setup_canvas(self, canvas):
+        self._canvas = canvas
         self._batch = Batch()
         self._background_group = OrderedGroup(0)
         self._background_sprites = {}
-        tw, th = self._tilesize
+        tw, th = self._sprites.tilesize
         for x in range(16):
             for y in range(16):
-                posx, posy = self._canvas.relative(x*self._scale*tw, y*self._scale*th)
+                posx, posy = self._canvas.relative(x*tw, y*th)
                 self._background_sprites[(x,y)] = self._sprites.create_sprite(
-                    "Grass", index=(x+y)%2, scale=self._scale,
+                    "Grass", index=(x+y)%2,
                     x=posx, y=posy,
                     batch=self._batch, group=self._background_group
+                )
+
+    def on_render(self):
+        self._batch.draw()
+
+
+class SpriteBackgroundPanel:
+
+    def __init__(self, sprites):
+        self._sprites = sprites
+
+    def setup_canvas(self, canvas):
+        self._canvas = canvas
+        self._batch = Batch()
+        self._water_group = OrderedGroup(0)
+        self._water_sprites = {}
+        tw, th = self._sprites.tilesize
+        for x in range(16):
+            for y in range(16):
+                posx, posy = self._canvas.relative(x*tw, y*th)
+                self._water_sprites[(x,y)] = self._sprites.create_sprite(
+                    "Water", index=(x+y)%2,
+                    x=posx, y=posy,
+                    batch=self._batch, group=self._water_group
                 )
 
     def on_render(self):
@@ -698,10 +747,10 @@ class GameStateSpritePanel(GameStatePanel):
     def _add_unit_geom(self, cell, unit_type, hp, max_hp, action, resources, owner):
         x, y = self._cell_to_coords(cell)
         geom = self._sprites.create_sprite(
-            unit_type, index=owner, scale=1.5,
+            unit_type, index=owner, scale=2,
             # xxx(okachaiev): i bet this could be done with proper settings for anchor
             x=x-16, y=y-16,
-            batch=self._batch, group=self._groups["circle_foreground"]
+            batch=self._batch, group=self._groups["unit_sprites"]
         )
         self._canvas.add_geom(geom)
         text = self._add_resource_label_geom((x, y), resources, font_size=9)

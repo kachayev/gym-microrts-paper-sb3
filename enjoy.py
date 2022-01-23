@@ -230,9 +230,9 @@ if __name__ == "__main__":
 
     print(f"Model is succesfully loaded, device={model.device}")
 
-    window = Window(2*40+16*32, 2*40+16*32, "MicroRTS")
+    window = Window(16*16+4*16, 16*16+4*16, "MicroRTS")
     sprites = SpritePanel("resources/toen_medieval_strategy.png", scale=2)
-    window.add_panel(sprites, 40, 40, 16*32, 16*32)
+    window.add_panel(sprites)
 
     # for a single game:
     # this API should be a part of "env.render()" and not visible for a user
