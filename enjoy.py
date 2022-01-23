@@ -22,7 +22,14 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
     ParseBotEnvs,
     _parse_bot_envs
 )
-from rendering import Window, GameStatePanel, GameStatePanelConfig, Tilemap
+from rendering import (
+    Window,
+    GameStatePanel,
+    GameStateSpritePanel,
+    GameStatePanelConfig,
+    SpritePanel,
+    Tilemap,
+)
 
 class OfflineDatasetRecorder(VecEnvWrapper):
 
@@ -223,30 +230,33 @@ if __name__ == "__main__":
 
     print(f"Model is succesfully loaded, device={model.device}")
 
-    window = Window(1280, 980, "MicroRTS")
+    window = Window(2*40+16*32, 2*40+16*32, "MicroRTS")
+    sprites = SpritePanel("resources/toen_medieval_strategy.png", scale=2)
+    window.add_panel(sprites, 40, 40, 16*32, 16*32)
 
     # for a single game:
     # this API should be a part of "env.render()" and not visible for a user
-    # game_panel = GameStatePanel(
-    #     env.vec_client.clients[0],
-    #     # xxx(okachaiev): I should be able to get mapsize from the client
-    #     config=GameStatePanelConfig(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name="coacAI")])
-    # )
-    # window.add_panel(game_panel)
+    game_panel = GameStateSpritePanel(
+        sprites.sprite_map,
+        env.vec_client.clients[0],
+        # xxx(okachaiev): I should be able to get mapsize from the client
+        config=GameStatePanelConfig(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name="coacAI")])
+    )
+    window.add_panel(game_panel)
 
     # for multiple games:
     # this API should be a part of "env.render()" and not visible for a user
-    unique_bots = {k.__name__:ind for ind, k in enumerate(args.bot_envs)}
-    game_tiles = [
-        GameStatePanel(
-            env.vec_client.clients[game_client_ind],
-            # xxx(okachaiev): I should be able to get mapsize from the client
-            config=GameStatePanelConfig(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name=ai_name)])
-        )
-        for (ai_name, game_client_ind)
-        in unique_bots.items()
-    ]
-    window.add_panel(Tilemap(game_tiles))
+    # unique_bots = {k.__name__:ind for ind, k in enumerate(args.bot_envs)}
+    # game_tiles = [
+    #     GameStatePanel(
+    #         env.vec_client.clients[game_client_ind],
+    #         # xxx(okachaiev): I should be able to get mapsize from the client
+    #         config=GameStatePanelConfig(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name=ai_name)])
+    #     )
+    #     for (ai_name, game_client_ind)
+    #     in unique_bots.items()
+    # ]
+    # window.add_panel(Tilemap(game_tiles))
 
     print(f"Env rendering engine is loaded")
 

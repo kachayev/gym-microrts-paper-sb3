@@ -50,6 +50,7 @@ Color = Union[Tuple[int, int, int], Tuple[int, int, int, int]]
 class Palette:
     gridline: Color
     resource: Color
+    progress_hp: Color
     players: List[Color]
     units: Dict[str, Color]
     buildings: Dict[str, Color]
@@ -57,6 +58,7 @@ class Palette:
 default_palette = Palette(
     gridline=Colors.black,
     resource=Colors.green,
+    progress_hp=Colors.darkred,
     players=[Colors.blue, Colors.pink],
     units={
         "Worker": Colors.silver,
@@ -106,6 +108,8 @@ class Canvas:
         self._offset_y = y
         self._width = width
         self._height = height
+        self._geoms = []
+        self._labels = []
 
     @property
     def viewport(self):
@@ -117,6 +121,16 @@ class Canvas:
         if y < 0:
             y = self._height + y
         return self._offset_x + x, self._offset_y + y
+
+    def clear(self):
+        self._geoms = []
+        self._labels = []
+    
+    def add_geom(self, *geoms):
+        self._geoms.extend(geoms)
+    
+    def add_label(self, *labels):
+        self._labels.extend(labels)
 
 
 class Subcanvas(Canvas):
@@ -142,9 +156,6 @@ class Window:
         self._window.set_caption(title)
         self._open = True
         self._panels = []
-        # xxx(okachaiev): somewhat sloppy on my side,
-        # by i don't have more complex use cases as of now
-        # to put work into building a proper solution
         # setting offset to (0, 0) meaning that by default
         # panel goes into bottom left corner of the window.
         # this might be contr-intuitive in a way, but it's
@@ -158,8 +169,9 @@ class Window:
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-    def add_panel(self, panel):
-        panel.setup_canvas(self._default_canvas)
+    def add_panel(self, panel, *canvas_args):
+        canvas = Canvas(*canvas_args) if canvas_args else self._default_canvas
+        panel.setup_canvas(canvas)
         self._panels.append(panel)
 
     def close(self):
@@ -300,19 +312,10 @@ class GameStatePanel:
         #             v.delete()
         #     for label in self._labels:
         #         label.delete()
-        self._geoms = []
-        self._labels = []
+        self._canvas.clear()
         self._init_layers()
         self._add_grid_geom()
         self._add_info_bar_geom()
-
-    def _add_to_canvas(self, *geoms):
-        for geom in geoms:
-            self._geoms.append(geom)
-
-    def _add_label_to_canvas(self, *labels):
-        for label in labels:
-            self._labels.append(label)
 
     def _cell_to_coords(self, cell: Tuple[int, int]) -> Tuple[float, float]:
         """
@@ -334,7 +337,7 @@ class GameStatePanel:
                 width=1, color=self._palette.gridline,
                 batch=self._batch, group=self._groups["grid"]
             )
-            self._add_to_canvas(wline)
+            self._canvas.add_geom(wline)
         ys = np.linspace(0, h, self._map_height+1)
         for y in ys:
             l_x, l_y = self._grid_canvas.relative(0, y)
@@ -344,7 +347,7 @@ class GameStatePanel:
                 width=1, color=self._palette.gridline,
                 batch=self._batch, group=self._groups["grid"]
             )
-            self._add_to_canvas(hline)
+            self._canvas.add_geom(hline)
 
     def _units_per_player(self):
         if not self._gs: return {}
@@ -372,8 +375,8 @@ class GameStatePanel:
                 anchor_x="left", anchor_y="center",
                 batch=self._batch, group=self._groups["grid"]
             )
-            self._add_to_canvas(player_dot)
-            self._add_label_to_canvas(player_label)
+            self._canvas.add_geom(player_dot)
+            self._canvas.add_label(player_label)
             x += dot_radius*2+4 + player_label.content_width + 4
             unit_label = pyglet.text.Label(
                 f"( {unit_stats.get(ind, 0)} )",
@@ -385,7 +388,7 @@ class GameStatePanel:
                 batch=self._batch, group=self._groups["grid"]
             )
             x += unit_label.content_width + 8
-            self._add_label_to_canvas(unit_label)
+            self._canvas.add_label(unit_label)
 
         if self._gs:
             time_label = pyglet.text.Label(
@@ -397,7 +400,7 @@ class GameStatePanel:
                 anchor_x="left", anchor_y="center",
                 batch=self._batch, group=self._groups["grid"]
             )
-            self._add_label_to_canvas(time_label)
+            self._canvas.add_label(time_label)
 
     def _add_resource_label_geom(self, cell_coords, resources, font_size=10):
         if resources == 0: return None
@@ -411,7 +414,7 @@ class GameStatePanel:
             anchor_x="center", anchor_y="center",
             batch=self._batch, group=self._groups["texts"]
         )
-        self._add_label_to_canvas(geom)
+        self._canvas.add_label(geom)
         return geom
 
     def _add_resource_geom(self, cell, resources):
@@ -422,7 +425,7 @@ class GameStatePanel:
             color=self._palette.resource,
             batch=self._batch, group=self._groups["background"]
         )
-        self._add_to_canvas(rect)
+        self._canvas.add_geom(rect)
         text = self._add_resource_label_geom((x, y), resources)
         return (rect, text)
 
@@ -436,25 +439,27 @@ class GameStatePanel:
             color=color, border_color=border_color,
             batch=self._batch, group=self._groups["background"]
         )
-        self._add_to_canvas(rect)
+        self._canvas.add_geom(rect)
         text = self._add_resource_label_geom((x, y), resources)
         # progress bar for hitpoints
         hp_progress = None
         if hp < max_hp:
             # xxx(okachaiev): progress bar for units could look like missing segment
             # rather than the bar on top of them
-            hp_progress = self._add_progress_bar_geom((x,y), hp/max_hp, color, darkred)
+            hp_progress = self._add_progress_bar_geom((x,y), hp/max_hp, color, self._palette.progress_hp)
         # new unit product
-        prod = None
-        if action is not None and action.action.getType() == ActionType.PRODUCE:
-            eta = action.time + action.action.ETA(action.unit) - self._gs.getTime()
-            progress = (1 - (eta / action.action.ETA(action.unit)))
-            label = str(action.action.getUnitType().name)
-            offset_x, offset_y = cell_direction_offsets[action.action.getDirection()]
-            unit_x, unit_y = cell
-            action_cell = (unit_x+offset_x, unit_y+offset_y)
-            prod = self._add_production_geom(action_cell, progress, label, owner)
+        prod = self._add_building_action_geom(cell, action, owner)
         return rect, text, hp_progress, prod
+
+    def _add_building_action_geom(self, cell, action, owner):
+        if action is None or action.action.getType() != ActionType.PRODUCE: return None
+        eta = action.time + action.action.ETA(action.unit) - self._gs.getTime()
+        progress = (1 - (eta / action.action.ETA(action.unit)))
+        label = str(action.action.getUnitType().name)
+        offset_x, offset_y = cell_direction_offsets[action.action.getDirection()]
+        unit_x, unit_y = cell
+        action_cell = (unit_x+offset_x, unit_y+offset_y)
+        return self._add_production_geom(action_cell, progress, label, owner)
 
     def _add_unit_tick_geom(self, cell_coors, target, color):
         if target is None: return None
@@ -462,7 +467,7 @@ class GameStatePanel:
         if isinstance(target, tuple):
             target_x, target_y = self._cell_to_coords(target)
             width = 1
-            color = color + (128,)
+            # color = color + (128,)
         elif target > 3:
             return None
         else:
@@ -474,7 +479,7 @@ class GameStatePanel:
             width=width, color=color,
             batch=self._batch, group=self._groups["ticks"]
         )
-        self._add_to_canvas(line)
+        self._canvas.add_geom(line)
         return line
 
     def _add_unit_geom(self, cell, unit_type, hp, max_hp, action, resources, owner):
@@ -492,7 +497,7 @@ class GameStatePanel:
             color=color,
             batch=self._batch, group=self._groups["circle_foreground"]
         )
-        self._add_to_canvas(back_circle, circle)
+        self._canvas.add_geom(back_circle, circle)
         text = self._add_resource_label_geom((x, y), resources, font_size=9)
         tick = None
         if action is not None:
@@ -505,7 +510,7 @@ class GameStatePanel:
         if hp < max_hp:
             # xxx(okachaiev): progress bar for units could look like missing segment
             # rather than the bar on top of them
-            hp_progress = self._add_progress_bar_geom((x,y), hp/max_hp, color, darkred)
+            hp_progress = self._add_progress_bar_geom((x,y), hp/max_hp, color, self._palette.progress_hp)
         return back_circle, circle, text, tick, hp_progress
 
     def _add_progress_bar_geom(self, cell_coords, progress, color, background_color):
@@ -515,7 +520,7 @@ class GameStatePanel:
             color=color,
             batch=self._batch, group=self._groups["progress"]
         )
-        self._add_to_canvas(left_bar)
+        self._canvas.add_geom(left_bar)
         right_bar = None
         if background_color is not None:
             right_bar = Rectangle(
@@ -524,7 +529,7 @@ class GameStatePanel:
                 color=background_color,
                 batch=self._batch, group=self._groups["progress"]
             )
-            self._add_to_canvas(right_bar)
+            self._canvas.add_geom(right_bar)
         return left_bar, right_bar
 
     def _add_production_geom(self, cell, progress, label_text, owner):
@@ -540,7 +545,7 @@ class GameStatePanel:
             anchor_x="center", anchor_y="center",
             batch=self._batch, group=self._groups["texts"]
         )
-        self._add_label_to_canvas(text)
+        self._canvas.add_label(text)
         return bar, text
 
     def on_render(self):
@@ -579,11 +584,175 @@ class GameStatePanel:
         self._batch.draw()
 
     def close(self):
-        self._reset_canvas()
+        self._reset_viewport()
 
     def __del__(self):
         # self.close()
         pass
+
+class SpriteMap:
+
+    def __init__(self, source_path, tilesize=(16,16), symbols=None):
+        self._source = pyglet.image.load(source_path)
+        self._w, self._h = self._source.width, self._source.height
+        self._tw, self._th = tilesize
+        self._regions = {}
+        if symbols is not None:
+            self.register_symbols(symbols)
+
+    def _region_for_cell(self, row, col):
+        return self._source.get_region(col*self._tw, self._h-(row+1)*self._th, self._tw, self._th)
+
+    def register_symbols(self, symbols):
+        for sym, cell in symbols.items():
+            if isinstance(cell, tuple):
+                self._regions[sym] = self._region_for_cell(*cell)
+            else:
+                self._regions[sym] = [self._region_for_cell(row, col) for row, col in cell]
+
+    def get_region(self, sym, index=None):
+        region = self._regions[sym]
+        if not isinstance(region, list):
+            return region
+        elif index is not None:
+            return region[index]
+        else:
+            return region[np.random.rand(len(region))]
+
+    def create_sprite(self, sym, index=None, scale=None, **kwargs):
+        geom = pyglet.sprite.Sprite(self.get_region(sym, index), **kwargs)
+        if scale is not None:
+            geom.scale = scale
+        return geom
+
+
+class SpritePanel:
+
+    def __init__(self, source_path, tilesize=(16,16), scale=1):
+        self._tilesize = (16,16)
+        self._scale = scale
+        self._sprites = SpriteMap(
+            source_path,
+            tilesize=tilesize,
+            # xxx(okachaiev): there are a lot of existing tile managers,
+            # i don't think i don't need to invent a new way to split the
+            # sprite or define a map
+            symbols={
+                "Water": [(24,0),(24,1),(24,2),(24,3)],
+                "Walls": [(28,0),(28,1),(28,2),(29,0),(29,2),(30,0),(30,1),(30,2)],
+                "Grass": [(0,0),(0,1),(0,2),(0,3)],
+                "Trees": [(0,4),(0,5),(0,6)],
+                "Worker": [(35,0),(36,0)],
+                "Worker/Resources": [(35,2),(36,2)],
+                "Light": [(16,1),(17,1)],
+                "Heavy": [(16,3),(17,3)],
+                "Ranged": [(16,0),(17,0)],
+                "Base": [(2,0),(1,1),(2,1),(1,2),(2,2)],
+                "Barracks": (4,6),
+                "Water/Objects": [(27,6),(28,6),(34,6)],
+            }
+        )
+
+    @property
+    def sprite_map(self):
+        return self._sprites
+
+    def setup_canvas(self, canvas):
+        self._canvas = canvas
+        self._batch = Batch()
+        self._background_group = OrderedGroup(0)
+        self._background_sprites = {}
+        tw, th = self._tilesize
+        for x in range(16):
+            for y in range(16):
+                posx, posy = self._canvas.relative(x*self._scale*tw, y*self._scale*th)
+                self._background_sprites[(x,y)] = self._sprites.create_sprite(
+                    "Grass", index=(x+y)%2, scale=self._scale,
+                    x=posx, y=posy,
+                    batch=self._batch, group=self._background_group
+                )
+
+    def on_render(self):
+        self._batch.draw()
+
+
+# todo:
+# * add more background (water, walls, ships, etc)
+# * randomize grass with small objects, and possible roads
+# * find a way to subscript resources and stockpiles (re-scale???)
+# * use 2x2 grid instead of scale=2, visualize movement of units
+# * mark attack with a special sprite, animate dead unit
+# * change direction for sprites when units are moving around
+class GameStateSpritePanel(GameStatePanel):
+
+    def __init__(self, sprites, *args, **kwargs):
+        self._sprites = sprites
+        super().__init__(*args, **kwargs)
+
+    def _add_grid_geom(self):
+        pass
+
+    def _add_resource_label_geom(self, *args, **kwargs):
+        return None
+
+    def _add_unit_geom(self, cell, unit_type, hp, max_hp, action, resources, owner):
+        x, y = self._cell_to_coords(cell)
+        geom = self._sprites.create_sprite(
+            unit_type, index=owner, scale=1.5,
+            # xxx(okachaiev): i bet this could be done with proper settings for anchor
+            x=x-16, y=y-16,
+            batch=self._batch, group=self._groups["circle_foreground"]
+        )
+        self._canvas.add_geom(geom)
+        text = self._add_resource_label_geom((x, y), resources, font_size=9)
+        tick = None
+        if action is not None:
+            if action.action.getType() == ActionType.ATTACK_LOCATION:
+                target = (action.action.getLocationX(), action.action.getLocationY())
+            else:
+                target = action.action.getDirection()
+            tick = self._add_unit_tick_geom((x,y), target, Colors.silver)
+        hp_progress = None
+        if hp < max_hp:
+            # xxx(okachaiev): progress bar for units could look like missing segment
+            # rather than the bar on top of them
+            hp_progress = self._add_progress_bar_geom((x,y), hp/max_hp, color, Colors.darkred)
+        return geom, text, tick, hp_progress
+
+    def _add_resource_geom(self, cell, resources):
+        if resources == 0: return None
+        x, y = self._cell_to_coords(cell)
+        geom = self._sprites.create_sprite(
+            "Trees", index=int(x+y)%3, scale=2,
+            # xxx(okachaiev): i bet this could be done with proper settings for anchor
+            x=x-16, y=y-16,
+            batch=self._batch, group=self._groups["background"]
+        )
+        self._canvas.add_geom(geom)
+        text = self._add_resource_label_geom((x, y), resources)
+        return (geom, text)
+
+    def _add_building_geom(self, cell, building_type, hp, max_hp, resources, action, owner):
+        x, y = self._cell_to_coords(cell)
+        geom = self._sprites.create_sprite(
+            building_type, index=owner, scale=2,
+            # xxx(okachaiev): i bet this could be done with proper settings for anchor
+            x=x-16, y=y-16,
+            batch=self._batch, group=self._groups["background"]
+        )
+        self._canvas.add_geom(geom)
+        text = self._add_resource_label_geom((x, y), resources)
+        # progress bar for hitpoints
+        hp_progress = None
+        if hp < max_hp:
+            # xxx(okachaiev): progress bar for units could look like missing segment
+            # rather than the bar on top of them
+            color = self._palette.buildings[building_type]
+            hp_progress = self._add_progress_bar_geom((x,y), hp/max_hp, color, self._palette.progress_hp)
+        # new unit product
+        prod = self._add_building_action_geom(cell, action, owner)
+        return geom, text, hp_progress, prod
+
 
 
 if __name__ == "__main__":
@@ -611,11 +780,16 @@ if __name__ == "__main__":
         def on_render(self):
             self._batch.draw()
 
-    window = Window(1024, 768)
+    window = Window(16*32, 16*32)
 
-    tiles = [EmptyPanel() for _ in range(20)]
-    window.add_panel(Tilemap(tiles))
+    def render_empty_panels():
+        tiles = [EmptyPanel() for _ in range(20)]
+        window.add_panel(Tilemap(tiles))
 
+
+    # xxx(okachaiev): would be really nice to have "anchor=center" or similar
+    window.add_panel(SpritePanel("resources/toen_medieval_strategy.png", scale=2), 40, 40, 16*32, 16*32)
+    # window.add_panel(GameStateSpritePanel())
     window.render()
 
     while True:
