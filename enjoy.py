@@ -226,6 +226,7 @@ if __name__ == "__main__":
     window = Window(1280, 980, "MicroRTS")
 
     # for a single game:
+    # this API should be a part of "env.render()" and not visible for a user
     # game_panel = GameStatePanel(
     #     env.vec_client.clients[0],
     #     # xxx(okachaiev): I should be able to get mapsize from the client
@@ -234,17 +235,18 @@ if __name__ == "__main__":
     # window.add_panel(game_panel)
 
     # for multiple games:
+    # this API should be a part of "env.render()" and not visible for a user
+    unique_bots = {k.__name__:ind for ind, k in enumerate(args.bot_envs)}
     game_tiles = [
         GameStatePanel(
-            game_client,
+            env.vec_client.clients[game_client_ind],
             # xxx(okachaiev): I should be able to get mapsize from the client
-            config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name=str(ai))])
+            config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name=ai_name)])
         )
-        for (ai, game_client)
-        in zip(args.bot_envs, env.vec_client.clients)
+        for (ai_name, game_client_ind)
+        in unique_bots.items()
     ]
     window.add_panel(Tilemap(game_tiles))
-
 
     print(f"Env rendering engine is loaded")
 

@@ -203,8 +203,10 @@ class GameStatePanel:
         self._game_config = config or {}
         self._canvas = None
 
-    # xxx(okachaiev): not sure if i need reference to the window
     def setup_canvas(self, canvas):
+        # if given canvas is not squared, replacing it
+        # with a subview that has equal dims and center within
+        # a boundaries of originally requested one
         self._canvas = canvas
         self._init_grid()
         self._reset_viewport()
@@ -212,15 +214,8 @@ class GameStatePanel:
     def _init_grid(self):
         self._map_height, self._map_width = self._game_config["mapsize"]
         self._offset = 40
-        self._xs, self._step = np.linspace(
-            self._view_offset_x+self._offset,
-            self._view_offset_x+self._width-self._offset,
-            self._map_width+1,
-            retstep=True
-        )
-        # xxx(okachaiev): this won't work for non-squared maps
-        # i need to fit squares into min dimention and center to fit max dimension
-        self._centers = self._xs[:-1]+self._step/2
+        # xxx(okachaiev): this won't work for non-square maps at all
+        self._step = self._canvas.viewport[0]/float(self._map_height+1)
 
     def _init_layers(self):
         self._batch = Batch()
@@ -246,7 +241,7 @@ class GameStatePanel:
         self._geoms = []
         self._labels = []
         self._init_layers()
-        self._add_grid_geom()
+        # self._add_grid_geom()
         self._add_info_bar_geom()
 
     def _add_to_canvas(self, *geoms):
@@ -258,8 +253,13 @@ class GameStatePanel:
             self._labels.append(label)
 
     def _cell_to_coords(self, cell: Tuple[int, int]) -> Tuple[float, float]:
-        row, col = cell
-        return self._centers[col-1], self._view_offset_x+self._width-self._centers[row-1]
+        """
+        Game level representation of cells:
+         * (x,y) stands for (column, row),
+         * (0,0) is a top level corner of the map.
+        """
+        col, row = cell
+        return self._canvas.relative(self._step*col+self._step/2, -1*(self._step*row+self._step/2))
 
     def _add_grid_geom(self):
         for start in self._xs:
@@ -279,7 +279,7 @@ class GameStatePanel:
     # player when rendering (like different rewards they got so far)
     def _add_info_bar_geom(self):
         dot_radius = 6
-        x, y = self._xs[0], self._xs[0] - self._offset/2
+        x, y = self._canvas.relative(self._step, self._step/2)
         for ind, player_name in enumerate(p["name"] for p in self._game_config["players"]):
             color = player_colors[ind]
             player_dot = Circle(
@@ -424,6 +424,9 @@ class GameStatePanel:
         return bar, text
 
     def on_render(self):
+        self._batch.draw()
+        return
+
         self._reset_canvas()
 
         gs = self._game_client.gs
