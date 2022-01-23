@@ -22,7 +22,7 @@ from ppo_gridnet_diverse_encode_decode_sb3 import (
     ParseBotEnvs,
     _parse_bot_envs
 )
-from rendering import Window, GameStatePanel, Tilemap
+from rendering import Window, GameStatePanel, GameStatePanelConfig, Tilemap
 
 class OfflineDatasetRecorder(VecEnvWrapper):
 
@@ -230,7 +230,7 @@ if __name__ == "__main__":
     # game_panel = GameStatePanel(
     #     env.vec_client.clients[0],
     #     # xxx(okachaiev): I should be able to get mapsize from the client
-    #     config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name="coacAI")])
+    #     config=GameStatePanelConfig(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name="coacAI")])
     # )
     # window.add_panel(game_panel)
 
@@ -241,7 +241,7 @@ if __name__ == "__main__":
         GameStatePanel(
             env.vec_client.clients[game_client_ind],
             # xxx(okachaiev): I should be able to get mapsize from the client
-            config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name=ai_name)])
+            config=GameStatePanelConfig(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name=ai_name)])
         )
         for (ai_name, game_client_ind)
         in unique_bots.items()

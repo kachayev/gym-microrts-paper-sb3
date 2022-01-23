@@ -1,8 +1,9 @@
 from collections import Counter
+from dataclasses import dataclass
 import math
 import numpy as np
 import sys
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from gym.envs.classic_control.rendering import get_display, get_window
 # as we've already imported gym's rendering we don't need to check
@@ -14,31 +15,25 @@ from pyglet.image import get_buffer_manager
 from pyglet.shapes import BorderedRectangle, Circle, Line, Rectangle
 
 # xxx(okachaiev): setup proper color pallet structure
-black = (0,0,0)
-green = (0,158,115)
-yellow = (240,228,66)
-blue = (0,114,178)
-deepskyblue = (0,191,255)
-pink = (204,121,167)
-orange = (213,94,0)
-silver = (192,192,192)
-slategray = (112,128,144)
-darkred = (114,0,0)
+class Colors:
+    black = (0,0,0)
+    green = (0,158,115)
+    yellow = (240,228,66)
+    blue = (0,114,178)
+    deepskyblue = (0,191,255)
+    pink = (204,121,167)
+    orange = (213,94,0)
+    silver = (192,192,192)
+    slategray = (112,128,144)
+    darkred = (114,0,0)
 
 # xxx(okachaiev): make proper unit configuration
 unit_config = {
-    "Worker": (silver, 0.5),
-    "Light": (yellow, 0.6),
-    "Heavy": (orange, 0.6),
-    "Ranged": (deepskyblue, 0.8),
+    "Worker": (0.5,),
+    "Light": (0.6,),
+    "Heavy": (0.6,),
+    "Ranged": (0.8,),
 }
-
-building_config = {
-    "Base": (silver,),
-    "Barracks": (slategray,)
-}
-
-player_colors = [blue, pink]
 
 direction_offsets = [(0, 1), (1, 0), (0, -1), (-1, 0),]
 cell_direction_offsets = [(0, -1), (1, 0), (0, 1), (-1, 0)]
@@ -49,6 +44,46 @@ def translate_direction(direction, length):
     offset_x, offset_y = direction_offsets[direction]
     return (offset_x*length, offset_y*length)
 
+Color = Union[Tuple[int, int, int], Tuple[int, int, int, int]]
+
+@dataclass
+class Palette:
+    gridline: Color
+    resource: Color
+    players: List[Color]
+    units: Dict[str, Color]
+    buildings: Dict[str, Color]
+
+default_palette = Palette(
+    gridline=Colors.black,
+    resource=Colors.green,
+    players=[Colors.blue, Colors.pink],
+    units={
+        "Worker": Colors.silver,
+        "Light":  Colors.yellow,
+        "Heavy":  Colors.orange,
+        "Ranged": Colors.deepskyblue,
+    },
+    buildings={
+        "Base":     Colors.silver,
+        "Barracks": Colors.slategray,
+    }
+)
+
+@dataclass
+class GameStatePanelConfig:
+    mapsize: Tuple[int, int]
+    players: List[Dict[str, Any]]
+    palette: Palette = default_palette
+
+    @property
+    def player_names(self) -> List[str]:
+        return (p.get("name", "Unknown") for p in self.players)
+
+default_game_state_panel_config = GameStatePanelConfig(
+    mapsize=(16,16),
+    players=[dict(name="Player #1"), dict(name="Player #2")],
+)
 
 # xxx(okachaiev): extend to all contstants
 class ActionType:
@@ -213,7 +248,8 @@ class GameStatePanel:
 
     def __init__(self, client, config=None):
         self._game_client = client
-        self._game_config = config or {}
+        self._game_config = config or default_game_state_panel_config
+        self._palette = self._game_config.palette
         self._canvas = None
 
     def setup_canvas(self, canvas):
@@ -233,7 +269,7 @@ class GameStatePanel:
         return self._game_client.gs
 
     def _init_grid(self):
-        self._map_height, self._map_width = self._game_config["mapsize"]
+        self._map_height, self._map_width = self._game_config.mapsize
         self._offset = 40
         w, h = self._canvas.viewport
         self._grid_canvas = Subcanvas(self._canvas, self._offset, self._offset, w-self._offset*2, h-self._offset*2)
@@ -295,7 +331,7 @@ class GameStatePanel:
             tl_x, tl_y = self._grid_canvas.relative(x, h) # xxx(okachaiev): i really want "-0"
             wline = Line(
                 bl_x, bl_y, tl_x, tl_y,
-                width=1, color=black,
+                width=1, color=self._palette.gridline,
                 batch=self._batch, group=self._groups["grid"]
             )
             self._add_to_canvas(wline)
@@ -305,7 +341,7 @@ class GameStatePanel:
             r_x, r_y = self._grid_canvas.relative(w, y)
             hline = Line(
                 l_x, l_y, r_x, r_y,
-                width=1, color=black,
+                width=1, color=self._palette.gridline,
                 batch=self._batch, group=self._groups["grid"]
             )
             self._add_to_canvas(hline)
@@ -320,8 +356,8 @@ class GameStatePanel:
         dot_radius = 6
         x, y = self._canvas.relative(self._offset, self._offset/2)
         unit_stats = self._units_per_player()
-        for ind, player_name in enumerate(p["name"] for p in self._game_config["players"]):
-            color = player_colors[ind]
+        for ind, player_name in enumerate(self._game_config.player_names):
+            color = self._palette.players[ind]
             player_dot = Circle(
                 x+dot_radius, y, dot_radius,
                 color=color,
@@ -383,7 +419,7 @@ class GameStatePanel:
         x, y = self._cell_to_coords(cell)
         rect = Rectangle(
             x-self._step/2, y-self._step/2, self._step, self._step,
-            color=green,
+            color=self._palette.resource,
             batch=self._batch, group=self._groups["background"]
         )
         self._add_to_canvas(rect)
@@ -392,8 +428,8 @@ class GameStatePanel:
 
     def _add_building_geom(self, cell, building_type, hp, max_hp, resources, action, owner):
         x, y = self._cell_to_coords(cell)
-        color, = building_config[building_type]
-        border_color = player_colors[owner]
+        color = self._palette.buildings[building_type]
+        border_color = self._palette.players[owner]
         rect = BorderedRectangle(
             x-self._step/2, y-self._step/2, self._step, self._step,
             border=3,
@@ -443,8 +479,9 @@ class GameStatePanel:
 
     def _add_unit_geom(self, cell, unit_type, hp, max_hp, action, resources, owner):
         x, y = self._cell_to_coords(cell)
-        color, radius = unit_config[unit_type]
-        border_color = player_colors[owner]
+        radius, = unit_config[unit_type]
+        color = self._palette.units[unit_type]
+        border_color = self._palette.players[owner]
         back_circle = Circle(
             x, y, radius*self._step/2+2,
             color=border_color,
@@ -492,7 +529,7 @@ class GameStatePanel:
 
     def _add_production_geom(self, cell, progress, label_text, owner):
         x, y = self._cell_to_coords(cell)
-        color = player_colors[owner]
+        color = self._palette.players[owner]
         bar = self._add_progress_bar_geom((x,y), progress, color, None)
         text = pyglet.text.Label(
             label_text,
@@ -524,7 +561,7 @@ class GameStatePanel:
                     unit.getResources(),
                     unit.getPlayer(),
                 )
-            elif unit.getType().name in building_config:
+            elif unit.getType().name in self._palette.buildings:
                 stockpile = 0
                 if unit.getType().isStockpile:
                     stockpile = self._gs.getPlayer(unit.getPlayer()).getResources()
@@ -563,12 +600,12 @@ if __name__ == "__main__":
             x1, y1 = self._canvas.relative(5, 5) # bottom left corner
             x2, y2 = self._canvas.relative(-5, -5) # top right corner
             self._lines = [
-                Line(x1, y1, x2, y2, width=1, color=darkred, batch=self._batch),
-                Line(x1, y2, x2, y1, width=1, color=darkred, batch=self._batch),
-                Line(x1, y1, x1, y2, width=3, color=black, batch=self._batch),
-                Line(x2, y1, x2, y2, width=3, color=black, batch=self._batch),
-                Line(x1, y1, x2, y1, width=3, color=black, batch=self._batch),
-                Line(x1, y2, x2, y2, width=3, color=black, batch=self._batch),
+                Line(x1, y1, x2, y2, width=1, color=Colors.darkred, batch=self._batch),
+                Line(x1, y2, x2, y1, width=1, color=Colors.darkred, batch=self._batch),
+                Line(x1, y1, x1, y2, width=3, color=Colors.black, batch=self._batch),
+                Line(x2, y1, x2, y2, width=3, color=Colors.black, batch=self._batch),
+                Line(x1, y1, x2, y1, width=3, color=Colors.black, batch=self._batch),
+                Line(x1, y2, x2, y2, width=3, color=Colors.black, batch=self._batch),
             ]
 
         def on_render(self):
