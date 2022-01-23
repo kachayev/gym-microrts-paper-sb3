@@ -82,6 +82,18 @@ class Canvas:
             y = self._height + y
         return self._offset_x + x, self._offset_y + y
 
+
+class Subcanvas(Canvas):
+
+    def __init__(self, parent, x, y, width, height):
+        self._parent = parent
+        super().__init__(x, y, width, height)
+
+    def relative(self, x, y):
+        selfx, selfy = super().relative(x, y)
+        return self._parent.relative(selfx, selfy)
+
+
 class Window:
 
     def __init__(self, width=640, height=640, title="MicroRTS", display=None):
@@ -207,6 +219,10 @@ class GameStatePanel:
         # if given canvas is not squared, replacing it
         # with a subview that has equal dims and center within
         # a boundaries of originally requested one
+        w, h = canvas.viewport
+        if w != h:
+            d = min(w, h)
+            canvas = Subcanvas(canvas, (w-d)/2, (h-d)/2, d, d)
         self._canvas = canvas
         self._init_grid()
         self._reset_viewport()
@@ -215,7 +231,10 @@ class GameStatePanel:
         self._map_height, self._map_width = self._game_config["mapsize"]
         self._offset = 40
         # xxx(okachaiev): this won't work for non-square maps at all
-        self._step = self._canvas.viewport[0]/float(self._map_height+1)
+        # xxx(okachaiev): much easier way for doing so would be to setup canvas
+        # for grid separately from everything else. this way I can move grid
+        # around without hurting rendering logic within it
+        self._step = (self._canvas.viewport[0]-self._offset*2)/float(self._map_width+1)
 
     def _init_layers(self):
         self._batch = Batch()
@@ -241,7 +260,7 @@ class GameStatePanel:
         self._geoms = []
         self._labels = []
         self._init_layers()
-        # self._add_grid_geom()
+        self._add_grid_geom()
         self._add_info_bar_geom()
 
     def _add_to_canvas(self, *geoms):
@@ -262,24 +281,33 @@ class GameStatePanel:
         return self._canvas.relative(self._step*col+self._step/2, -1*(self._step*row+self._step/2))
 
     def _add_grid_geom(self):
-        for start in self._xs:
-            hline = Line(
-                start, self._offset, start, self._width-self._offset,
-                width=1, color=black,
-                batch=self._batch, group=self._groups["grid"]
-            )
+        w, h = self._canvas.viewport
+        xs = np.linspace(self._offset, w-self._offset, self._map_width+1)
+        for x in xs:
+            bl_x, bl_y = self._canvas.relative(x, self._offset)
+            tl_x, tl_y = self._canvas.relative(x, -self._offset)
             wline = Line(
-                self._offset, start, self._width-self._offset, start,
+                bl_x, bl_y, tl_x, tl_y,
                 width=1, color=black,
                 batch=self._batch, group=self._groups["grid"]
             )
-            self._add_to_canvas(hline, wline)
+            self._add_to_canvas(wline)
+        ys = np.linspace(self._offset, h-self._offset, self._map_height+1)
+        for y in ys:
+            l_x, l_y = self._canvas.relative(self._offset, y)
+            r_x, r_y = self._canvas.relative(-self._offset, y)
+            hline = Line(
+                l_x, l_y, r_x, r_y,
+                width=1, color=black,
+                batch=self._batch, group=self._groups["grid"]
+            )
+            self._add_to_canvas(hline)
 
     # xxx(okachaiev): should have an option to add information for each
     # player when rendering (like different rewards they got so far)
     def _add_info_bar_geom(self):
         dot_radius = 6
-        x, y = self._canvas.relative(self._step, self._step/2)
+        x, y = self._canvas.relative(self._offset, self._offset/2)
         for ind, player_name in enumerate(p["name"] for p in self._game_config["players"]):
             color = player_colors[ind]
             player_dot = Circle(
