@@ -230,11 +230,11 @@ class GameStatePanel:
     def _init_grid(self):
         self._map_height, self._map_width = self._game_config["mapsize"]
         self._offset = 40
+        w, h = self._canvas.viewport
+        self._grid_canvas = Subcanvas(self._canvas, self._offset, self._offset, w-self._offset*2, h-self._offset*2)
+        gw, gh = self._grid_canvas.viewport
         # xxx(okachaiev): this won't work for non-square maps at all
-        # xxx(okachaiev): much easier way for doing so would be to setup canvas
-        # for grid separately from everything else. this way I can move grid
-        # around without hurting rendering logic within it
-        self._step = (self._canvas.viewport[0]-self._offset*2)/float(self._map_width+1)
+        self._step = gw/float(self._map_width+1)
 
     def _init_layers(self):
         self._batch = Batch()
@@ -278,24 +278,24 @@ class GameStatePanel:
          * (0,0) is a top level corner of the map.
         """
         col, row = cell
-        return self._canvas.relative(self._step*col+self._step/2, -1*(self._step*row+self._step/2))
+        return self._grid_canvas.relative(self._step*col+self._step/2, -1*(self._step*row+self._step/2))
 
     def _add_grid_geom(self):
-        w, h = self._canvas.viewport
-        xs = np.linspace(self._offset, w-self._offset, self._map_width+1)
+        w, h = self._grid_canvas.viewport
+        xs = np.linspace(0, w, self._map_width+1)
         for x in xs:
-            bl_x, bl_y = self._canvas.relative(x, self._offset)
-            tl_x, tl_y = self._canvas.relative(x, -self._offset)
+            bl_x, bl_y = self._grid_canvas.relative(x, 0)
+            tl_x, tl_y = self._grid_canvas.relative(x, h) # xxx(okachaiev): i really want "-0"
             wline = Line(
                 bl_x, bl_y, tl_x, tl_y,
                 width=1, color=black,
                 batch=self._batch, group=self._groups["grid"]
             )
             self._add_to_canvas(wline)
-        ys = np.linspace(self._offset, h-self._offset, self._map_height+1)
+        ys = np.linspace(0, h, self._map_height+1)
         for y in ys:
-            l_x, l_y = self._canvas.relative(self._offset, y)
-            r_x, r_y = self._canvas.relative(-self._offset, y)
+            l_x, l_y = self._grid_canvas.relative(0, y)
+            r_x, r_y = self._grid_canvas.relative(w, y)
             hline = Line(
                 l_x, l_y, r_x, r_y,
                 width=1, color=black,
