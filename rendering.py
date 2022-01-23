@@ -69,7 +69,15 @@ class Window:
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
     def add_panel(self, panel):
-        panel.setup_viewport(self._width, self._height)
+        # xxx(okachaiev): somewhat sloppy on my side,
+        # by i don't have more complex use cases as of now
+        # to put work into building a proper solution
+        # setting offset to (0, 0) meaning that by default
+        # panel goes into top-left corner of the window
+        # also, hierarchical offset requires each view to
+        # deal with with the fact they might be shifted in
+        # coordinates
+        panel.setup_viewport(self._width, self._height, (0, 0))
         self._panels.append(panel)
 
     def close(self):
@@ -121,9 +129,21 @@ class Tilemap:
         self._tiles = tiles
         self._initialized = False
 
-    def setup_viewport(self, view_width, view_height):
+    def setup_viewport(self, view_width, view_height, view_offset=None):
+        self._width = view_width
+        self._height = view_height
+        self._view_offset = (0, 0) if view_offset is None else view_offset
+        self._view_offset_x, self._view_offset_y = self._view_offset
+        n_tiles = len(self._tiles)
+        grid_size = int(n_tiles ** 0.5)+1
+        cell_width, cell_height = self._width/float(grid_size), self._height/float(grid_size)
+        cells = np.mgrid[
+            self._view_offset_x:self._view_offset_x+self._width:grid_size*1j,
+            self._view_offset_y:self._view_offset_y+self._height:grid_size*1j,
+        ].reshape(2, -1).T
+        for ind, tile in enumerate(self._tiles):
+            tile.setup_viewport(cell_width, cell_height, cells[ind])
         self._initialized = True
-        pass
 
     def close(self):
         if self._initialized:
@@ -131,6 +151,10 @@ class Tilemap:
                 tile.close()
         self._initialized = False
     
+    def on_render(self):
+        for tile in self._tiles:
+            tile.on_render()
+
     def __del__(self):
         # self.close()
         pass
@@ -143,9 +167,11 @@ class GameStatePanel:
         self._game_config = config or {}
 
     # xxx(okachaiev): not sure if i need reference to the window
-    def setup_viewport(self, view_width, view_height):
+    def setup_viewport(self, view_width, view_height, view_offset=None):
         self._width = view_width
         self._height = view_height
+        self._view_offset = (0, 0) if view_offset is None else view_offset
+        self._view_offset_x, self._view_offset_y = self._view_offset
         self._init_grid()
         self._reset_canvas()
 
@@ -153,7 +179,10 @@ class GameStatePanel:
         self._map_height, self._map_width = self._game_config["mapsize"]
         self._offset = 40
         self._xs, self._step = np.linspace(
-            self._offset, self._width-self._offset, self._map_width+1, retstep=True
+            self._view_offset_x+self._offset,
+            self._view_offset_x+self._width-self._offset,
+            self._map_width+1,
+            retstep=True
         )
         # xxx(okachaiev): this won't work for non-squared maps
         # i need to fit squares into min dimention and center to fit max dimension
@@ -196,7 +225,7 @@ class GameStatePanel:
 
     def _cell_to_coords(self, cell: Tuple[int, int]) -> Tuple[float, float]:
         row, col = cell
-        return self._centers[col-1], self._width-self._centers[row-1]
+        return self._centers[col-1], self._view_offset_x+self._width-self._centers[row-1]
 
     def _add_grid_geom(self):
         for start in self._xs:

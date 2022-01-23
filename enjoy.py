@@ -223,27 +223,27 @@ if __name__ == "__main__":
 
     print(f"Model is succesfully loaded, device={model.device}")
 
-    window = Window(640, 640, "MicroRTS")
+    window = Window(1280, 980, "MicroRTS")
 
     # for a single game:
-    game_panel = GameStatePanel(
-        env.vec_client.clients[0],
-        # xxx(okachaiev): I should be able to get mapsize from the client
-        config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name="coacAI")])
-    )
-    window.add_panel(game_panel)
+    # game_panel = GameStatePanel(
+    #     env.vec_client.clients[0],
+    #     # xxx(okachaiev): I should be able to get mapsize from the client
+    #     config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name="coacAI")])
+    # )
+    # window.add_panel(game_panel)
 
     # for multiple games:
-    # game_tiles = [
-    #     GameStatePanel(
-    #         game_client,
-    #         # xxx(okachaiev): I should be able to get mapsize from the client
-    #         config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name=str(ai))])
-    #     )
-    #     for (ai, game_client)
-    #     in zip(args.bot_envs, env.vec_client.clients)
-    # ]
-    # window.add_panel(Tilemap(game_tiles))
+    game_tiles = [
+        GameStatePanel(
+            game_client,
+            # xxx(okachaiev): I should be able to get mapsize from the client
+            config=dict(mapsize=(16,16), players=[dict(name="ppo_gridnet"), dict(name=str(ai))])
+        )
+        for (ai, game_client)
+        in zip(args.bot_envs, env.vec_client.clients)
+    ]
+    window.add_panel(Tilemap(game_tiles))
 
 
     print(f"Env rendering engine is loaded")
