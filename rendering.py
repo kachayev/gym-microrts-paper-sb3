@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import sys
 from typing import List, Optional, Tuple
@@ -9,6 +10,7 @@ import pyglet
 from pyglet.gl import *
 from pyglet.graphics import Batch, OrderedGroup
 from pyglet.image import get_buffer_manager
+from pyglet.shapes import BorderedRectangle, Circle, Line, Rectangle
 
 # xxx(okachaiev): setup proper color pallet structure
 black = (0,0,0)
@@ -52,6 +54,34 @@ class ActionType:
     PRODUCE = 4
 
 
+class Canvas:
+
+    """Canvas object provides an easy way to connect relative
+    coordinates of a specific viewport to a global coordinate
+    system of the window (technically, of a the parent view).
+
+    Note that Canvas maintains the same axis as a window in general:
+    given (x, y) position of the canvas is a position of bottom
+    left corner (left-hand rule).
+    """
+
+    def __init__(self, x, y, width, height):
+        self._offset_x = x
+        self._offset_y = y
+        self._width = width
+        self._height = height
+
+    @property
+    def viewport(self):
+        return self._width, self._height
+
+    def relative(self, x, y):
+        if x < 0:
+            x = self._width + x
+        if y < 0:
+            y = self._height + y
+        return self._offset_x + x, self._offset_y + y
+
 class Window:
 
     def __init__(self, width=640, height=640, title="MicroRTS", display=None):
@@ -64,20 +94,24 @@ class Window:
         self._window.set_caption(title)
         self._open = True
         self._panels = []
+        # xxx(okachaiev): somewhat sloppy on my side,
+        # by i don't have more complex use cases as of now
+        # to put work into building a proper solution
+        # setting offset to (0, 0) meaning that by default
+        # panel goes into bottom left corner of the window.
+        # this might be contr-intuitive in a way, but it's
+        # consistent with how all other objects are positioned
+        # (e.g. anchors for text labels, etc).
+        # also, hierarchical offset requires each view to
+        # deal with with the fact they might be shifted in
+        # coordinates
+        self._default_canvas = Canvas(0, 0, self._width, self._height)
 
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
     def add_panel(self, panel):
-        # xxx(okachaiev): somewhat sloppy on my side,
-        # by i don't have more complex use cases as of now
-        # to put work into building a proper solution
-        # setting offset to (0, 0) meaning that by default
-        # panel goes into top-left corner of the window
-        # also, hierarchical offset requires each view to
-        # deal with with the fact they might be shifted in
-        # coordinates
-        panel.setup_viewport(self._width, self._height, (0, 0))
+        panel.setup_canvas(self._default_canvas)
         self._panels.append(panel)
 
     def close(self):
@@ -110,6 +144,10 @@ class Window:
         self._window.flip()
         return arr if return_rgb_array else self._open
 
+    def on_tick(self):
+        self._window.switch_to()
+        self._window.dispatch_events()
+
     def __del__(self):
         # self.close()
         pass
@@ -129,20 +167,18 @@ class Tilemap:
         self._tiles = tiles
         self._initialized = False
 
-    def setup_viewport(self, view_width, view_height, view_offset=None):
-        self._width = view_width
-        self._height = view_height
-        self._view_offset = (0, 0) if view_offset is None else view_offset
-        self._view_offset_x, self._view_offset_y = self._view_offset
+    def setup_canvas(self, canvas):
+        self._canvas = canvas
+        self._width, self._height = canvas.viewport
         n_tiles = len(self._tiles)
-        grid_size = int(n_tiles ** 0.5)+1
+        grid_size = math.ceil(n_tiles ** 0.5)
         cell_width, cell_height = self._width/float(grid_size), self._height/float(grid_size)
-        cells = np.mgrid[
-            self._view_offset_x:self._view_offset_x+self._width:grid_size*1j,
-            self._view_offset_y:self._view_offset_y+self._height:grid_size*1j,
-        ].reshape(2, -1).T
+        x, y = canvas.relative(0, 0)
+        mx, my = canvas.relative(self._width, self._height)
+        cells = np.mgrid[x:mx:(grid_size+1)*1j, y:my:(grid_size+1)*1j][:, :-1, :-1].reshape(2, -1).T
         for ind, tile in enumerate(self._tiles):
-            tile.setup_viewport(cell_width, cell_height, cells[ind])
+            x, y = cells[ind]
+            tile.setup_canvas(Canvas(x, y, cell_width, cell_height))
         self._initialized = True
 
     def close(self):
@@ -165,15 +201,13 @@ class GameStatePanel:
     def __init__(self, client, config=None):
         self._game_client = client
         self._game_config = config or {}
+        self._canvas = None
 
     # xxx(okachaiev): not sure if i need reference to the window
-    def setup_viewport(self, view_width, view_height, view_offset=None):
-        self._width = view_width
-        self._height = view_height
-        self._view_offset = (0, 0) if view_offset is None else view_offset
-        self._view_offset_x, self._view_offset_y = self._view_offset
+    def setup_canvas(self, canvas):
+        self._canvas = canvas
         self._init_grid()
-        self._reset_canvas()
+        self._reset_viewport()
 
     def _init_grid(self):
         self._map_height, self._map_width = self._game_config["mapsize"]
@@ -202,14 +236,14 @@ class GameStatePanel:
     # all geometries but it's a good enough starting point. later
     # i can reimplement it to track changes in already defined shapes
     # dropping entire batch seems brutal
-    def _reset_canvas(self):
+    def _reset_viewport(self):
         # if hasattr(self, "_canvas"):
         #     for v in self._canvas:
         #         if hasattr(v, "delete"):
         #             v.delete()
         #     for label in self._labels:
         #         label.delete()
-        self._canvas = []
+        self._geoms = []
         self._labels = []
         self._init_layers()
         self._add_grid_geom()
@@ -217,7 +251,7 @@ class GameStatePanel:
 
     def _add_to_canvas(self, *geoms):
         for geom in geoms:
-            self._canvas.append(geom)
+            self._geoms.append(geom)
 
     def _add_label_to_canvas(self, *labels):
         for label in labels:
@@ -229,12 +263,12 @@ class GameStatePanel:
 
     def _add_grid_geom(self):
         for start in self._xs:
-            hline = pyglet.shapes.Line(
+            hline = Line(
                 start, self._offset, start, self._width-self._offset,
                 width=1, color=black,
                 batch=self._batch, group=self._groups["grid"]
             )
-            wline = pyglet.shapes.Line(
+            wline = Line(
                 self._offset, start, self._width-self._offset, start,
                 width=1, color=black,
                 batch=self._batch, group=self._groups["grid"]
@@ -248,7 +282,7 @@ class GameStatePanel:
         x, y = self._xs[0], self._xs[0] - self._offset/2
         for ind, player_name in enumerate(p["name"] for p in self._game_config["players"]):
             color = player_colors[ind]
-            player_dot = pyglet.shapes.Circle(
+            player_dot = Circle(
                 x+dot_radius, y, dot_radius,
                 color=color,
                 batch=self._batch, group=self._groups["grid"]
@@ -284,7 +318,7 @@ class GameStatePanel:
     def _add_resource_geom(self, cell, resources):
         if resources == 0: return None
         x, y = self._cell_to_coords(cell)
-        rect = pyglet.shapes.Rectangle(
+        rect = Rectangle(
             x-self._step/2, y-self._step/2, self._step, self._step,
             color=green,
             batch=self._batch, group=self._groups["background"]
@@ -297,7 +331,7 @@ class GameStatePanel:
         x, y = self._cell_to_coords(cell)
         color, = building_config[building_type]
         border_color = player_colors[owner]
-        rect = pyglet.shapes.BorderedRectangle(
+        rect = BorderedRectangle(
             x-self._step/2, y-self._step/2, self._step, self._step,
             border=3,
             color=color, border_color=border_color,
@@ -320,7 +354,7 @@ class GameStatePanel:
         # 2 pairs of offsets. just start from the mid of the cell
         offset_x, offset_y = translate_direction(direction, radius)
         offset_x_hat, offset_y_hat = translate_direction(direction, self._step)
-        line = pyglet.shapes.Line(
+        line = Line(
             x+offset_x, y+offset_y, x+offset_x_hat, y+offset_y_hat,
             width=2, color=color,
             batch=self._batch, group=self._groups["texts"]
@@ -334,12 +368,12 @@ class GameStatePanel:
         x, y = self._cell_to_coords(cell)
         color, radius = unit_config[unit_type]
         border_color = player_colors[owner]
-        back_circle = pyglet.shapes.Circle(
+        back_circle = Circle(
             x, y, radius*self._step/2+2,
             color=border_color,
             batch=self._batch, group=self._groups["background"]
         )
-        circle = pyglet.shapes.Circle(
+        circle = Circle(
             x, y, radius*self._step/2,
             color=color,
             batch=self._batch, group=self._groups["circle_foreground"]
@@ -364,7 +398,7 @@ class GameStatePanel:
         self._add_to_canvas(left_bar)
         right_bar = None
         if background_color is not None:
-            right_bar = pyglet.shapes.Rectangle(
+            right_bar = Rectangle(
                 x-self._step/2+self._step*progress, y+self._step/2-0.2*self._step,
                 self._step*(1-progress), 0.2*self._step,
                 color=background_color,
@@ -438,3 +472,39 @@ class GameStatePanel:
     def __del__(self):
         # self.close()
         pass
+
+
+if __name__ == "__main__":
+
+    class EmptyPanel:
+        """Just a sample panel to test out how tiling
+        works for screens of different dimensions.
+        """
+
+        def setup_canvas(self, canvas):
+            self._canvas = canvas
+            self._batch = Batch()
+
+            x1, y1 = self._canvas.relative(5, 5) # bottom left corner
+            x2, y2 = self._canvas.relative(-5, -5) # top right corner
+            self._lines = [
+                Line(x1, y1, x2, y2, width=1, color=darkred, batch=self._batch),
+                Line(x1, y2, x2, y1, width=1, color=darkred, batch=self._batch),
+                Line(x1, y1, x1, y2, width=3, color=black, batch=self._batch),
+                Line(x2, y1, x2, y2, width=3, color=black, batch=self._batch),
+                Line(x1, y1, x2, y1, width=3, color=black, batch=self._batch),
+                Line(x1, y2, x2, y2, width=3, color=black, batch=self._batch),
+            ]
+
+        def on_render(self):
+            self._batch.draw()
+
+    window = Window(1024, 768)
+
+    tiles = [EmptyPanel() for _ in range(20)]
+    window.add_panel(Tilemap(tiles))
+
+    window.render()
+
+    while True:
+        window.on_tick()
