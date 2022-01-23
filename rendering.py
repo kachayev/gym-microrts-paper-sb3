@@ -52,7 +52,7 @@ def translate_direction(direction, length):
 # xxx(okachaiev): extend to all contstants
 class ActionType:
     PRODUCE = 4
-
+    ATTACK_LOCATION = 5
 
 class Canvas:
 
@@ -227,6 +227,10 @@ class GameStatePanel:
         self._init_grid()
         self._reset_viewport()
 
+    @property
+    def _gs(self):
+        return self._game_client.gs
+
     def _init_grid(self):
         self._map_height, self._map_width = self._game_config["mapsize"]
         self._offset = 40
@@ -240,10 +244,11 @@ class GameStatePanel:
         self._batch = Batch()
         self._groups = {
             "background": OrderedGroup(0),
-            "circle_foreground": OrderedGroup(1),
-            "texts": OrderedGroup(2),
-            "progress": OrderedGroup(3),
-            "grid": OrderedGroup(4),
+            "ticks": OrderedGroup(1),
+            "circle_foreground": OrderedGroup(2),
+            "texts": OrderedGroup(3),
+            "progress": OrderedGroup(4),
+            "grid": OrderedGroup(5),
         }
 
     # xxx(okachaiev): it might be not the best approach to redefine
@@ -355,7 +360,7 @@ class GameStatePanel:
         text = self._add_resource_label_geom((x, y), resources)
         return (rect, text)
 
-    def _add_building_geom(self, cell, building_type, hp, max_hp, resources, owner):
+    def _add_building_geom(self, cell, building_type, hp, max_hp, resources, action, owner):
         x, y = self._cell_to_coords(cell)
         color, = building_config[building_type]
         border_color = player_colors[owner]
@@ -367,32 +372,48 @@ class GameStatePanel:
         )
         self._add_to_canvas(rect)
         text = self._add_resource_label_geom((x, y), resources)
+
+        # progress bar for hitpoints
         hp_progress = None
         if hp < max_hp:
             # xxx(okachaiev): progress bar for units could look like missing segment
             # rather than the bar on top of them
             hp_progress = self._add_progress_bar_geom((x,y), hp/max_hp, color, darkred)
-        return rect, text, hp_progress
 
-    def _add_unit_tick_geom(self, cell_coors, radius, direction, color):
-        if direction is None: return None
-        if direction > 3: return None
+        # new unit product
+        prod = None
+        if action is not None and action.action.getType() == ActionType.PRODUCE:
+            eta = action.time + action.action.ETA(action.unit) - self._gs.getTime()
+            progress = (1 - (eta / action.action.ETA(action.unit)))
+            label = str(action.action.getUnitType().name)
+            offset_x, offset_y = cell_direction_offsets[action.action.getDirection()]
+            unit_x, unit_y = cell
+            action_cell = (unit_x+offset_x, unit_y+offset_y)
+            prod = self._add_production_geom(action_cell, progress, label, owner)
+        return rect, text, hp_progress, prod
+
+    def _add_unit_tick_geom(self, cell_coors, target, color):
+        if target is None: return None
         x, y = cell_coors
-        # xxx(okachaiev): if this is drawn first, there's no ned to compute
-        # 2 pairs of offsets. just start from the mid of the cell
-        offset_x, offset_y = translate_direction(direction, radius)
-        offset_x_hat, offset_y_hat = translate_direction(direction, self._step)
+        if isinstance(target, tuple):
+            target_x, target_y = self._cell_to_coords(target)
+            width = 1
+            color = color + (128,)
+        elif target > 3:
+            return None
+        else:
+            offset_x_hat, offset_y_hat = translate_direction(target, self._step)
+            target_x, target_y = x+offset_x_hat, y+offset_y_hat
+            width = 2
         line = Line(
-            x+offset_x, y+offset_y, x+offset_x_hat, y+offset_y_hat,
-            width=2, color=color,
-            batch=self._batch, group=self._groups["texts"]
+            x, y, target_x, target_y,
+            width=width, color=color,
+            batch=self._batch, group=self._groups["ticks"]
         )
         self._add_to_canvas(line)
         return line
 
-    # xxx(okachaiev): "direction" should be probably splited into "action"
-    # or something (as it might mean different things)
-    def _add_unit_geom(self, cell, unit_type, hp, max_hp, direction, resources, owner):
+    def _add_unit_geom(self, cell, unit_type, hp, max_hp, action, resources, owner):
         x, y = self._cell_to_coords(cell)
         color, radius = unit_config[unit_type]
         border_color = player_colors[owner]
@@ -408,7 +429,13 @@ class GameStatePanel:
         )
         self._add_to_canvas(back_circle, circle)
         text = self._add_resource_label_geom((x, y), resources, font_size=9)
-        tick = self._add_unit_tick_geom((x,y), radius*self._step/2, direction, border_color)
+        tick = None
+        if action is not None:
+            if action.action.getType() == ActionType.ATTACK_LOCATION:
+                target = (action.action.getLocationX(), action.action.getLocationY())
+            else:
+                target = action.action.getDirection()
+            tick = self._add_unit_tick_geom((x,y), target, border_color)
         hp_progress = None
         if hp < max_hp:
             # xxx(okachaiev): progress bar for units could look like missing segment
@@ -454,10 +481,8 @@ class GameStatePanel:
     def on_render(self):
         self._reset_viewport()
 
-        gs = self._game_client.gs
-
-        for unit in gs.getUnits():
-            action = gs.getActionAssignment(unit)
+        for unit in self._gs.getUnits():
+            action = self._gs.getActionAssignment(unit)
             cell = (unit.getX(), unit.getY())
             if unit.getType().isResource:
                 self._add_resource_geom(cell, unit.getResources())
@@ -467,14 +492,14 @@ class GameStatePanel:
                     unit.getType().name,
                     unit.getHitPoints(),
                     unit.getMaxHitPoints(),
-                    None if not action else action.action.getDirection(),
+                    action,
                     unit.getResources(),
                     unit.getPlayer(),
                 )
             elif unit.getType().name in building_config:
                 stockpile = 0
                 if unit.getType().isStockpile:
-                    stockpile = gs.getPlayer(unit.getPlayer()).getResources()
+                    stockpile = self._gs.getPlayer(unit.getPlayer()).getResources()
                 # should be a building
                 self._add_building_geom(
                     cell,
@@ -482,15 +507,9 @@ class GameStatePanel:
                     unit.getHitPoints(),
                     unit.getMaxHitPoints(),
                     stockpile,
+                    action,
                     unit.getPlayer(),
                 )
-                if action is not None and action.action.getType() == ActionType.PRODUCE:
-                    eta = action.time + action.action.ETA(action.unit) - gs.getTime()
-                    progress = (1 - (eta / action.action.ETA(action.unit)))
-                    label = str(action.action.getUnitType().name)
-                    offset_row, offset_col = cell_direction_offsets[action.action.getDirection()]
-                    action_cell = (unit.getX()+offset_row, unit.getY()+offset_col)
-                    self._add_production_geom(action_cell, progress, label, unit.getPlayer())
 
         self._batch.draw()
 
