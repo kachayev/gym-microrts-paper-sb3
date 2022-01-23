@@ -1,3 +1,4 @@
+from collections import Counter
 import math
 import numpy as np
 import sys
@@ -242,14 +243,15 @@ class GameStatePanel:
 
     def _init_layers(self):
         self._batch = Batch()
-        self._groups = {
-            "background": OrderedGroup(0),
-            "ticks": OrderedGroup(1),
-            "circle_foreground": OrderedGroup(2),
-            "texts": OrderedGroup(3),
-            "progress": OrderedGroup(4),
-            "grid": OrderedGroup(5),
-        }
+        group_names = [
+            "background",
+            "ticks",
+            "circle_foreground",
+            "texts",
+            "progress",
+            "grid"
+        ]
+        self._groups = {n:OrderedGroup(ind) for ind, n in enumerate(group_names)}
 
     # xxx(okachaiev): it might be not the best approach to redefine
     # all geometries but it's a good enough starting point. later
@@ -308,11 +310,16 @@ class GameStatePanel:
             )
             self._add_to_canvas(hline)
 
+    def _units_per_player(self):
+        if not self._gs: return {}
+        return Counter(unit.getPlayer() for unit in self._gs.getUnits())
+
     # xxx(okachaiev): should have an option to add information for each
     # player when rendering (like different rewards they got so far)
     def _add_info_bar_geom(self):
         dot_radius = 6
         x, y = self._canvas.relative(self._offset, self._offset/2)
+        unit_stats = self._units_per_player()
         for ind, player_name in enumerate(p["name"] for p in self._game_config["players"]):
             color = player_colors[ind]
             player_dot = Circle(
@@ -331,7 +338,30 @@ class GameStatePanel:
             )
             self._add_to_canvas(player_dot)
             self._add_label_to_canvas(player_label)
-            x += dot_radius*2+4 + player_label.content_width + 8
+            x += dot_radius*2+4 + player_label.content_width + 4
+            unit_label = pyglet.text.Label(
+                f"( {unit_stats.get(ind, 0)} )",
+                font_size=10,
+                color=(0,0,0,255),
+                bold=False,
+                x=x, y=y,
+                anchor_x="left", anchor_y="center",
+                batch=self._batch, group=self._groups["grid"]
+            )
+            x += unit_label.content_width + 8
+            self._add_label_to_canvas(unit_label)
+
+        if self._gs:
+            time_label = pyglet.text.Label(
+                f"T: {self._gs.getTime()}",
+                font_size=10,
+                color=(0,0,0,255),
+                bold=False,
+                x=x+4, y=y,
+                anchor_x="left", anchor_y="center",
+                batch=self._batch, group=self._groups["grid"]
+            )
+            self._add_label_to_canvas(time_label)
 
     def _add_resource_label_geom(self, cell_coords, resources, font_size=10):
         if resources == 0: return None
@@ -372,14 +402,12 @@ class GameStatePanel:
         )
         self._add_to_canvas(rect)
         text = self._add_resource_label_geom((x, y), resources)
-
         # progress bar for hitpoints
         hp_progress = None
         if hp < max_hp:
             # xxx(okachaiev): progress bar for units could look like missing segment
             # rather than the bar on top of them
             hp_progress = self._add_progress_bar_geom((x,y), hp/max_hp, color, darkred)
-
         # new unit product
         prod = None
         if action is not None and action.action.getType() == ActionType.PRODUCE:
