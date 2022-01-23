@@ -40,7 +40,7 @@ building_config = {
 player_colors = [blue, pink]
 
 direction_offsets = [(0, 1), (1, 0), (0, -1), (-1, 0),]
-cell_direction_offsets = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+cell_direction_offsets = [(0, -1), (1, 0), (0, 1), (-1, 0)]
 
 # xxx(okachaiev): would be nice to have geometry over point
 # with overloaded + and *
@@ -234,7 +234,7 @@ class GameStatePanel:
         self._grid_canvas = Subcanvas(self._canvas, self._offset, self._offset, w-self._offset*2, h-self._offset*2)
         gw, gh = self._grid_canvas.viewport
         # xxx(okachaiev): this won't work for non-square maps at all
-        self._step = gw/float(self._map_width+1)
+        self._step = gw/float(self._map_width)
 
     def _init_layers(self):
         self._batch = Batch()
@@ -328,7 +328,7 @@ class GameStatePanel:
             self._add_label_to_canvas(player_label)
             x += dot_radius*2+4 + player_label.content_width + 8
 
-    def _add_resource_label_geom(self, cell_coords, resources, font_size=12):
+    def _add_resource_label_geom(self, cell_coords, resources, font_size=10):
         if resources == 0: return None
         x, y = cell_coords
         geom = pyglet.text.Label(
@@ -452,16 +452,13 @@ class GameStatePanel:
         return bar, text
 
     def on_render(self):
-        self._batch.draw()
-        return
-
-        self._reset_canvas()
+        self._reset_viewport()
 
         gs = self._game_client.gs
 
         for unit in gs.getUnits():
             action = gs.getActionAssignment(unit)
-            cell = (unit.getY()+1, unit.getX()+1)
+            cell = (unit.getX(), unit.getY())
             if unit.getType().isResource:
                 self._add_resource_geom(cell, unit.getResources())
             elif unit.getType().canMove:
@@ -492,7 +489,7 @@ class GameStatePanel:
                     progress = (1 - (eta / action.action.ETA(action.unit)))
                     label = str(action.action.getUnitType().name)
                     offset_row, offset_col = cell_direction_offsets[action.action.getDirection()]
-                    action_cell = (unit.getY()+1+offset_row, unit.getX()+1+offset_col)
+                    action_cell = (unit.getX()+offset_row, unit.getY()+offset_col)
                     self._add_production_geom(action_cell, progress, label, unit.getPlayer())
 
         self._batch.draw()
